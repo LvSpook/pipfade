@@ -1,0 +1,12 @@
+* text=auto eol=crlf
+
+# The docs site and project metadata are not part of what the app is
+docs/** linguist-documentation linguist-detectable=false
+*.md linguist-documentation linguist-detectable=false
+*.cmd linguist-detectable=false
+*.vbs linguist-detectable=false
+
+# Keep generated binaries out of diffs
+*.ico binary
+*.png binary
+*.woff2 binary

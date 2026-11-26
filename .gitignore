@@ -1,0 +1,14 @@
+# Local settings created at runtime (user data)
+pipfade.config.json
+
+# Generated on every start, so they follow the app's icon rather than going stale
+pipfade.ico
+Start pipfade.lnk
+
+# OS cruft
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local agent workspace data
+.opencode/

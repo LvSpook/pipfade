@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 320" width="1200" height="320" role="img" aria-label="pipfade - a see-through mini player for Windows">
+  <defs>
+    <linearGradient id="bgL" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%"   stop-color="#ffffff"/>
+      <stop offset="55%"  stop-color="#fafafa"/>
+      <stop offset="100%" stop-color="#f4f4f5"/>
+    </linearGradient>
+    <linearGradient id="frameL" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%"   stop-color="#141416" stop-opacity="1"/>
+      <stop offset="55%"  stop-color="#141416" stop-opacity="0.78"/>
+      <stop offset="100%" stop-color="#141416" stop-opacity="0.22"/>
+    </linearGradient>
+    <linearGradient id="markL" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%"   stop-color="#0d0d0f"/>
+      <stop offset="100%" stop-color="#4a4a50"/>
+    </linearGradient>
+    <linearGradient id="wordL" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%"   stop-color="#0d0d0f"/>
+      <stop offset="100%" stop-color="#45454b"/>
+    </linearGradient>
+    <radialGradient id="glowL" cx="0.16" cy="0.5" r="0.62">
+      <stop offset="0%"   stop-color="#000000" stop-opacity="0.05"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="softL" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="9"/>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="320" fill="url(#bgL)"/>
+  <rect width="1200" height="320" fill="url(#glowL)"/>
+
+  <g stroke="#000000" stroke-opacity="0.035" stroke-width="1">
+    <path d="M0 80h1200M0 160h1200M0 240h1200"/>
+    <path d="M300 0v320M600 0v320M900 0v320"/>
+  </g>
+
+  <g transform="translate(116 92)">
+    <rect x="0" y="0" width="210" height="136" rx="45" ry="45"
+          fill="none" stroke="#000000" stroke-opacity="0.07" stroke-width="26"
+          filter="url(#softL)"/>
+    <rect x="0" y="0" width="210" height="136" rx="45" ry="45"
+          fill="none" stroke="url(#frameL)" stroke-width="15.5"
+          stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+
+  <g transform="translate(392 0)">
+    <text x="0" y="150"
+          font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif"
+          font-size="82" font-weight="700" fill="url(#wordL)"
+          letter-spacing="-2">pipfade</text>
+
+    <text x="3" y="196"
+          font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif"
+          font-size="21" fill="#5d5d64"
+          letter-spacing="0.2">A see-through mini player for Brave, Chrome and Edge</text>
+
+    <g transform="translate(3 226)"
+       font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif"
+       font-size="13" font-weight="600" letter-spacing="0.6">
+      <rect x="0" y="-16" width="106" height="28" rx="14"
+            fill="#000000" fill-opacity="0.035" stroke="#000000" stroke-opacity="0.14"/>
+      <text x="53" y="3" text-anchor="middle" fill="#3a3a40">PowerShell</text>
+
+      <rect x="118" y="-16" width="102" height="28" rx="14"
+            fill="#000000" fill-opacity="0.035" stroke="#000000" stroke-opacity="0.14"/>
+      <text x="169" y="3" text-anchor="middle" fill="#3a3a40">Windows</text>
+
+      <rect x="232" y="-16" width="106" height="28" rx="14"
+            fill="#000000" fill-opacity="0.035" stroke="#000000" stroke-opacity="0.14"/>
+      <text x="285" y="3" text-anchor="middle" fill="#3a3a40">No install</text>
+    </g>
+  </g>
+
+  <rect x="1" y="1" width="1198" height="318" rx="18" fill="none"
+        stroke="#000000" stroke-opacity="0.08" stroke-width="2"/>
+</svg>

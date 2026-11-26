@@ -1,0 +1,53 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Stage release files
+        shell: pwsh
+        run: |
+          $stage = Join-Path $PWD 'dist\pipfade'
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+          Copy-Item pipfade.ps1          $stage
+          Copy-Item 'Start pipfade.vbs'  $stage
+          Copy-Item 'Start pipfade.cmd'  $stage
+          Copy-Item 'Restore mini player.cmd' $stage
+          Copy-Item README.md            $stage
+          Copy-Item LICENSE              $stage
+          Get-ChildItem $stage | Select-Object Name, Length | Format-Table
+
+      - name: Check the script parses
+        shell: pwsh
+        run: |
+          $errs = $null
+          [void][System.Management.Automation.Language.Parser]::ParseInput(
+            (Get-Content .\pipfade.ps1 -Raw), [ref]$null, [ref]$errs)
+          if ($errs -and $errs.Count -gt 0) {
+            $errs | ForEach-Object { Write-Error "$($_.Extent.StartLineNumber): $($_.Message)" }
+            exit 1
+          }
+          Write-Host 'script parses cleanly'
+
+      - name: Zip
+        shell: pwsh
+        run: Compress-Archive -Path 'dist\pipfade\*' -DestinationPath 'dist\pipfade-windows.zip' -Force
+
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          name: 'pipfade ${{ github.ref_name }}'
+          body_path: CHANGELOG.md
+          files: dist/pipfade-windows.zip
+          prerelease: ${{ contains(github.ref_name, 'wip') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}

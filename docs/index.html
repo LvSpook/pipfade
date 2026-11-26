@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pipfade - a see-through mini player for Windows</title>
+<meta name="description" content="Make the Brave, Chrome and Edge picture-in-picture window translucent, remember where you left it, and put a control bar inside it. Plain PowerShell, no installer.">
+<meta name="theme-color" content="#0c0c0d" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta property="og:title" content="pipfade">
+<meta property="og:description" content="A see-through mini player for Brave, Chrome and Edge.">
+<meta property="og:type" content="website">
+<meta property="og:image" content="banner.svg">
+<link rel="icon" href="logo.svg" type="image/svg+xml">
+<link rel="preload" href="fonts/inter-tight-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/jetbrains-mono-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="style.css">
+<script>
+  // Apply the saved theme before first paint to avoid a flash.
+  (function () {
+    try {
+      var saved = localStorage.getItem("pf-theme");
+      if (saved === "light" || saved === "dark") {
+        document.documentElement.setAttribute("data-theme", saved);
+      }
+    } catch (e) {}
+  })();
+</script>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <defs>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v11"/><path d="M7.5 10.5 12 15l4.5-4.5"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></symbol>
+    <symbol id="i-external" viewBox="0 0 24 24"><path d="M8 16 16 8"/><path d="M9 8h7v7"/></symbol>
+    <symbol id="i-terminal" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="2.5"/><path d="M7.5 10l2.5 2.2-2.5 2.2"/><path d="M12.5 14.5h4"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M5 6h14"/><path d="M5 12h14"/><path d="M5 18h14"/><circle cx="9" cy="6" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="8" cy="18" r="2"/></symbol>
+    <symbol id="i-keyboard" viewBox="0 0 24 24"><rect x="2.5" y="6.5" width="19" height="11" rx="2.5"/><path d="M6.5 10h.01M10 10h.01M13.5 10h.01M17 10h.01M8 13.5h8"/></symbol>
+    <symbol id="i-window" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="2.5"/><path d="M3 9h18"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4.5" y="10.5" width="15" height="10" rx="2.5"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></symbol>
+    <symbol id="i-sparkle" viewBox="0 0 24 24"><path d="M12 3.5 13.7 9l5.5 1.7-5.5 1.7L12 18l-1.7-5.6L4.8 10.7 10.3 9Z"/><path d="M18.5 16.5l.7 2 2 .7-2 .7-.7 2-.7-2-2-.7 2-.7Z"/></symbol>
+    <symbol id="i-triangle" viewBox="0 0 24 24"><path d="M12 4.5 21 19.5H3Z"/><path d="M12 10v4"/><circle cx="12" cy="17" r=".6"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7.5A2 2 0 0 1 5 5.5h4l2 2.5h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M2.5 12h2M19.5 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z"/></symbol>
+  </defs>
+</svg>
+
+<a class="skip" href="#main">Skip to content</a>
+
+<nav class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="#top">
+      <img src="logo.svg" alt="" width="26" height="26">
+      <span><b>pip</b>fade</span>
+    </a>
+    <div class="nav-links">
+      <a href="#features">Features</a>
+      <a href="#download">Download</a>
+      <a href="#hotkeys">Hotkeys</a>
+      <a href="#build">Running it</a>
+      <a href="#settings">Settings</a>
+      <a href="https://github.com/LvSpook">More tools</a>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Toggle colour scheme" title="Toggle colour scheme">
+      <svg class="icon to-light" aria-hidden="true"><use href="#i-sun"/></svg>
+      <svg class="icon to-dark" aria-hidden="true"><use href="#i-moon"/></svg>
+    </button>
+  </div>
+</nav>
+
+<header class="hero" id="top">
+  <div class="wrap hero-inner">
+    <div class="preview">
+      <img src="banner.svg" alt="pipfade: a rounded frame that fades out towards its right edge, next to the word pipfade" width="1200" height="320">
+    </div>
+
+    <h1>Your mini player, <em>see-through</em></h1>
+    <p class="lede">
+      The picture-in-picture window is a native OS window, not a web page, so no
+      extension or userscript can restyle it. pipfade drives it from Windows
+      instead: translucent, remembered, and with its own control bar - in one
+      PowerShell script you can read end to end.
+    </p>
+
+    <div class="pill-row">
+      <span class="pill">PowerShell 5.1+</span>
+      <span class="pill">Windows 10 / 11</span>
+      <span class="pill">No install</span>
+      <span class="pill warn">Brave · Chrome · Edge</span>
+    </div>
+
+    <div class="cta-row">
+      <a class="btn btn-primary" href="https://github.com/LvSpook/pipfade/archive/refs/heads/main.zip">
+        <svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>
+        Download
+      </a>
+      <a class="btn btn-ghost" href="https://github.com/LvSpook/pipfade">
+        View on GitHub
+        <svg class="icon" aria-hidden="true"><use href="#i-external"/></svg>
+      </a>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+  <div class="wrap">
+
+    <div class="notice">
+      <svg class="icon ico" aria-hidden="true"><use href="#i-triangle"/></svg>
+      <div>
+        <strong>Unpack and double-click</strong>
+        <p>
+          There is no installer and nothing to sign up for. Copy the folder
+          anywhere you like, run <code>Start pipfade.vbs</code>, and it lives in
+          the notification area. It writes <code>Start pipfade.lnk</code> beside
+          itself on that first run, carrying the app's own icon, which is the one
+          to double-click from then on. Windows may warn about running a script
+          you downloaded; the whole thing is a single readable
+          <code>.ps1</code> file.
+        </p>
+      </div>
+    </div>
+
+    <section id="features">
+      <div class="section-head">
+        <h2>Features</h2>
+        <p>What it does to the player, and what it leaves alone.</p>
+      </div>
+
+      <div class="grid">
+        <div class="card">
+          <h3><svg class="icon ico" aria-hidden="true"><use href="#i-window"/></svg> The player</h3>
+          <ul>
+            <li><strong>Opacity</strong>: any value down to 16%, from the panel, the hover bar, or a hotkey</li>
+            <li><strong>Type an exact number</strong>: click the percentage and enter it, in either place</li>
+            <li><strong>Remember size and position</strong>: per player, not per app</li>
+            <li><strong>Apply on open</strong>: a new player arrives already at your opacity</li>
+            <li><strong>Always on top</strong>: keeps the player above fullscreen apps</li>
+            <li><strong>Frame lock</strong>: puts the player back if something moves it</li>
+            <li><strong>Resizable window</strong>: drag any edge or corner, and the size is remembered</li>
+          </ul>
+        </div>
+
+        <div class="card">
+          <h3><svg class="icon ico" aria-hidden="true"><use href="#i-sliders"/></svg> The hover bar</h3>
+          <ul>
+            <li>Fades in along the player's top edge when you point at it</li>
+            <li>Percentage, a slider, then click-through, panel, lock and quit</li>
+            <li>Never takes focus, so video and hotkeys keep working</li>
+            <li>Sizes itself down to fit a narrow portrait player</li>
+            <li>Fades with the player instead of staying a bright stripe</li>
+          </ul>
+        </div>
+
+        <div class="card">
+          <h3><svg class="icon ico" aria-hidden="true"><use href="#i-keyboard"/></svg> Keys and presets</h3>
+          <ul>
+            <li>13 hotkeys, all rebindable from the panel</li>
+            <li>Bindings are <strong>recorded</strong>, never typed, so one cannot fail to parse</li>
+            <li>Four preset slots, each with an optional shortcut</li>
+            <li>A preset stores every switch, not just the opacity</li>
+          </ul>
+        </div>
+
+        <div class="card">
+          <h3><svg class="icon ico" aria-hidden="true"><use href="#i-terminal"/></svg> Behaviour</h3>
+          <ul>
+            <li>Detects a new player from a window event, not a poll</li>
+            <li>Picks up players that were already open when it started</li>
+            <li>System tray icon with the same actions</li>
+            <li>Tells Windows it is its own app, so it gets its own taskbar button</li>
+            <li>Survives an Explorer restart: the tray icon comes back by itself</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="look">
+      <div class="section-head">
+        <h2>What it looks like</h2>
+        <p>Three tabs, one window, drawn to stay out of the way of the video. Resize it like any other window - the contents keep a readable column in the middle, except on the Hotkeys tab, where the extra width goes into the binding boxes so a long combination reads in full.</p>
+      </div>
+
+      <div class="shots">
+        <figure>
+          <img src="img/panel-controls.png" alt="The Controls tab: an opacity readout reading 80% mostly solid, a slider, and eight switches including Click-through, Remember size and position, Lock the frame, and Apply when a player opens." width="360" height="470">
+          <figcaption>Controls</figcaption>
+        </figure>
+        <figure>
+          <img src="img/panel-hotkeys.png" alt="The Hotkeys tab: thirteen action names, each with a box holding its key combination." width="360" height="470">
+          <figcaption>Hotkeys</figcaption>
+        </figure>
+        <figure>
+          <img src="img/panel-presets.png" alt="The Presets tab: three named rows with shortcuts and a summary of what each one stores, plus apply, save and remove buttons." width="360" height="470">
+          <figcaption>Presets</figcaption>
+        </figure>
+      </div>
+
+      <div class="bar-showcase" style="margin-top:26px">
+        <img src="img/bar.png" alt="The hover bar: a percentage well reading 59%, a slider, and four small icons for click-through, the panel, the frame lock and quit, drawn over a dark video frame." width="386" height="34">
+        <figcaption>The bar, twice its real height, over a dark video frame.</figcaption>
+      </div>
+    </section>
+
+    <section id="download">
+      <div class="section-head">
+        <h2>Download</h2>
+        <p>The whole app is one script and a handful of launchers.</p>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <caption class="sr-only">Files in the download</caption>
+          <thead>
+            <tr><th scope="col">File</th><th scope="col">What it is</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>pipfade.ps1</code></td>
+              <td>The app. Everything is in here, including the drawing.</td>
+            </tr>
+            <tr>
+              <td><code>Start pipfade.vbs</code></td>
+              <td>The one to double-click the first time: no console flash.</td>
+            </tr>
+            <tr>
+              <td><code>Start pipfade.lnk</code></td>
+              <td>Written beside the script on first run. Carries pipfade's own icon, so use this from then on.</td>
+            </tr>
+            <tr>
+              <td><code>Restore mini player.cmd</code></td>
+              <td>Puts every player back to normal and clears the saved settings.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p class="after-table">
+        <a class="btn btn-primary" href="https://github.com/LvSpook/pipfade">
+          Get it from GitHub
+          <svg class="icon" aria-hidden="true"><use href="#i-external"/></svg>
+        </a>
+      </p>
+    </section>
+
+    <section id="hotkeys">
+      <div class="section-head">
+        <h2>Default hotkeys</h2>
+        <p>All of them work with the panel closed, and all of them can be changed.</p>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <caption class="sr-only">Default keyboard shortcuts</caption>
+          <thead>
+            <tr><th scope="col">Keys</th><th scope="col">Action</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Up</kbd></td><td>More opaque</td></tr>
+            <tr><td><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Down</kbd></td><td>More see-through</td></tr>
+            <tr><td><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>0</kbd></td><td>Solid again</td></tr>
+            <tr><td><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>C</kbd></td><td>Toggle click-through</td></tr>
+            <tr><td><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>X</kbd></td><td>Hide the player</td></tr>
+            <tr><td><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>G</kbd></td><td>Toggle remember size and position</td></tr>
+            <tr><td><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>L</kbd></td><td>Lock the frame where it is</td></tr>
+            <tr><td><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>H</kbd></td><td>Toggle the hover controls</td></tr>
+            <tr><td><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>T</kbd></td><td>Toggle always on top</td></tr>
+            <tr><td><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>A</kbd></td><td>Open the panel</td></tr>
+            <tr><td><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>P</kbd></td><td>Pick the window under the cursor</td></tr>
+            <tr><td><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>R</kbd></td><td>Reset everything</td></tr>
+            <tr><td><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Q</kbd></td><td>Quit and restore the player</td></tr>
+            <tr><td><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>1</kbd>…<kbd>4</kbd></td><td>Apply a saved preset</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p class="note">
+        A key pressed without Ctrl or Alt is refused, because a bare letter would be
+        swallowed system-wide. Press Backspace while recording to clear a binding, or
+        Escape to leave it as it was.
+      </p>
+
+      <p class="note">
+        Keypad keys cannot take Shift while NumLock is on. Windows turns a keypad digit
+        plus Shift into the arrow key before any program sees it, so the shortcut would
+        register and then never fire. pipfade says so and keeps waiting instead of
+        storing it: turn NumLock off and the same combination works.
+      </p>
+    </section>
+
+    <section id="build">
+      <div class="section-head">
+        <h2>Running it</h2>
+        <p>Windows PowerShell 5.1 or newer. Nothing else to install.</p>
+      </div>
+
+      <div class="stack">
+        <div>
+          <p class="hint">Start it hidden in the tray</p>
+          <pre><code>powershell -NoProfile -ExecutionPolicy Bypass -File .\pipfade.ps1 -Tray</code></pre>
+        </div>
+        <div>
+          <p class="hint">Start it and open the panel</p>
+          <pre><code>powershell -NoProfile -ExecutionPolicy Bypass -File .\pipfade.ps1</code></pre>
+        </div>
+        <div>
+          <p class="hint">See what it can find</p>
+          <pre><code>.\pipfade.ps1 -List</code></pre>
+        </div>
+        <div>
+          <p class="hint">Put everything back and exit</p>
+          <pre><code>.\pipfade.ps1 -Reset</code></pre>
+        </div>
+      </div>
+
+      <p class="note">
+        <code>-Alpha 170</code> sets the opacity and exits; <code>-Hwnd 0x1A2B3C</code>
+        targets one window by handle. If a player is ever missed, hover over it and
+        press <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>P</kbd>. pipfade checks that the
+        window you picked really is a mini player, so pointing at the wrong thing
+        cannot make an ordinary window see-through.
+      </p>
+    </section>
+
+    <section id="settings">
+      <div class="section-head">
+        <h2>Settings locations</h2>
+        <p>Next to the script, so the folder is the install.</p>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <caption class="sr-only">Where pipfade keeps its files</caption>
+          <thead>
+            <tr><th scope="col">Item</th><th scope="col">Path</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Settings</td><td><code>pipfade.config.json</code>, next to the script</td></tr>
+            <tr><td>Icon</td><td><code>pipfade.ico</code>, rewritten on every start</td></tr>
+            <tr><td>Launcher</td><td><code>Start pipfade.lnk</code>, rewritten on every start</td></tr>
+            <tr><td>Autostart entry</td><td><code>HKCU\...\Run</code>, only when Start with Windows is on</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p class="note">
+        Delete <code>pipfade.config.json</code> to start fresh. An older file that is
+        missing a newer key is upgraded in place: unknown keys keep their default and
+        your existing settings are left alone.
+      </p>
+    </section>
+
+    <section id="honest">
+      <div class="section-head">
+        <h2>What it cannot do</h2>
+        <p>Worth saying plainly, because the alternative is a support thread.</p>
+      </div>
+
+      <div class="grid">
+        <div class="card">
+          <h3><svg class="icon ico" aria-hidden="true"><use href="#i-lock"/></svg> A lock is not a wall</h3>
+          <ul>
+            <li>Nothing outside a program can stop that program moving its own window.</li>
+            <li>What the frame lock does is put the player back the moment it moves, which from your side looks like the frame refusing to budge.</li>
+            <li>It is per window, so two players are two separate locked layouts.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3><svg class="icon ico" aria-hidden="true"><use href="#i-window"/></svg> Exclusive fullscreen</h3>
+          <ul>
+            <li>Always on top wins inside the normal window stack.</li>
+            <li>A game in exclusive fullscreen owns the display and cannot be drawn over by any normal window.</li>
+            <li>Use its borderless-windowed mode instead.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3><svg class="icon ico" aria-hidden="true"><use href="#i-sliders"/></svg> Not fully invisible</h3>
+          <ul>
+            <li>The floor is about 16% on purpose.</li>
+            <li>A window you cannot see is a window you cannot grab again.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3><svg class="icon ico" aria-hidden="true"><use href="#i-terminal"/></svg> Windows only</h3>
+          <ul>
+            <li>It is built on window styles, DWM attributes and WinForms.</li>
+            <li>pipfade never touches a window of its own, so the panel and the bar cannot be faded by accident.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="ai">
+      <div class="section-head">
+        <h2>AI assistance disclosure</h2>
+        <p>You deserve to know how the software you run was made.</p>
+      </div>
+
+      <div class="notice">
+        <svg class="icon ico" aria-hidden="true"><use href="#i-sparkle"/></svg>
+        <div>
+          <strong>Parts of this project were written with the help of an AI coding assistant.</strong>
+          <p>
+            Design decisions, code, docs and the drawing code have been produced or
+            reviewed with AI assistance, under human direction and review. The project
+            is <em>not</em> an official product of any AI company and is not endorsed by
+            or affiliated with any model provider.
+          </p>
+          <p>
+            AI-assisted code can contain mistakes a human would not have made. Testing
+            and a deliberately small surface reduce that risk but cannot eliminate it.
+            If AI-assisted code is a problem for your use case, please don't run it.
+          </p>
+        </div>
+      </div>
+    </section>
+
+  </div>
+</main>
+
+<footer>
+  <div class="wrap foot-inner">
+    <span>Built with PowerShell · Windows only · MIT licensed</span>
+    <nav aria-label="Footer">
+      <a href="https://github.com/LvSpook/pipfade">GitHub</a>
+      <a href="https://github.com/LvSpook/pipfade/issues">Issues</a>
+      <a href="https://github.com/LvSpook">More tools</a>
+    </nav>
+  </div>
+</footer>
+
+<script>
+  (function () {
+    var root = document.documentElement;
+    var btn = document.getElementById("theme-toggle");
+    var prefersLight = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)");
+
+    function current() {
+      return root.getAttribute("data-theme") || (prefersLight && prefersLight.matches ? "light" : "dark");
+    }
+
+    btn.addEventListener("click", function () {
+      var next = current() === "light" ? "dark" : "light";
+      root.setAttribute("data-theme", next);
+      try { localStorage.setItem("pf-theme", next); } catch (e) {}
+    });
+  })();
+</script>
+</body>
+</html>
