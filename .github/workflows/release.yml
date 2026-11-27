@@ -44,10 +44,41 @@ jobs:
         shell: pwsh
         run: Compress-Archive -Path 'dist\pipfade\*' -DestinationPath 'dist\pipfade-windows.zip' -Force
 
+      - name: Extract this version's notes
+        shell: pwsh
+        run: |
+          # The changelog keeps every release. Publishing all of it means each
+          # release page repeats the history and buries the part that is new,
+          # so take the one section that matches the tag being built.
+          $tag = '${{ github.ref_name }}'
+          $lines = Get-Content CHANGELOG.md
+          $start = -1
+          $end = $lines.Count
+          for ($i = 0; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -match '^##\s+What''s New in\s+(v[\d.]+)') {
+              if ($start -lt 0) {
+                if ($Matches[1] -eq $tag) { $start = $i + 1 }
+              } else {
+                $end = $i
+                break
+              }
+            }
+          }
+          if ($start -lt 0) {
+            Write-Host "no section for $tag in CHANGELOG.md; publishing the whole file"
+            Copy-Item CHANGELOG.md 'dist\notes.md'
+          } else {
+            $body = $lines[$start..($end - 1)] -join "`n"
+            $body = $body.Trim()
+            "Download **pipfade-windows.zip** below, unpack it anywhere, and double-click **Start pipfade.vbs**.`n`n$body" |
+              Set-Content 'dist\notes.md' -Encoding utf8
+            Write-Host "notes for $tag: $($body.Length) characters"
+          }
+
       - name: Publish
         uses: softprops/action-gh-release@v2
         with:
           name: 'pipfade ${{ github.ref_name }}'
-          body_path: CHANGELOG.md
+          body_path: dist/notes.md
           files: dist/pipfade-windows.zip
           prerelease: ${{ contains(github.ref_name, 'wip') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
