@@ -52,10 +52,15 @@ inherits it at every size.
 - Panel is 360×470, fixed: one size holds every row and a tab strip, so there
   are no drag edges to find and no size to remember. A field that still clips
   says the rest of itself in a dark tip after half a second of hover.
-- The hover bar is 240–386 wide and 30 tall, always 12px inside the player's top
+- The hover bar is 240–386 wide and 34 tall, always 10px inside the player's top
   edge. Inside the panel the content column is 324px wide, and both the Keys and
   Presets tabs split it between a measured label/name column and a binding box
   wide enough for a four-modifier combination.
+- The bar sits in the same topmost band as the player, so it re-asserts its place
+  after anything raises the player above it. That is a z-order rule, not a visual
+  one, but it is what makes the bar's targets feel like targets.
+- A paused player holds the bar open. Absence is the default state of this
+  surface; a still frame is the one case where presence is not in the way.
 - 18px page margin, 8px vertical rhythm between switch rows (28px rows).
 - One-pixel strokes, never two: a doubled edge reads as a seam.
 

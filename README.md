@@ -58,6 +58,7 @@ remember exactly how you left it.
 **Without leaving the video**
 
 - Hover bar inside the player: percentage, slider, four buttons
+- Stays open while the video is paused, and comes back the moment you hover it
 - Never takes focus, so the video keeps playing
 - Click-through, so clicks reach the window behind
 - Always on top, even over fullscreen games and video

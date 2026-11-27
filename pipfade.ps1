@@ -2109,34 +2109,59 @@ namespace PipFadeUI
         }
 
         // ------------------------------------------------------------- mouse
+        // A 24px icon with no tolerance is what made the bar feel finicky: a
+        // press one pixel wide of the glyph did nothing at all. Icons are tested
+        // first, with a couple of pixels of slack, because an icon is a discrete
+        // target while the rail is a continuous area it can afford to yield.
+        bool Hit(Rectangle r, Point p, int slop)
+        {
+            return p.X >= r.Left - slop && p.X < r.Right + slop &&
+                   p.Y >= r.Top - slop && p.Y < r.Bottom + slop;
+        }
+
+        int IconAt(Point p)
+        {
+            if (Hit(ClickRect, p, 2)) return 1;
+            if (Hit(PanelRect, p, 2)) return 2;
+            if (Hit(LockRect, p, 2)) return 4;
+            if (Hit(QuitRect, p, 2)) return 5;
+            return -1;
+        }
+
         protected override void OnMouseDown(MouseEventArgs e)
         {
             if (e.Button != MouseButtons.Left) { base.OnMouseDown(e); return; }
-            // Percentage first: it overlaps nothing, but checking it before the
-            // drag area makes the intent explicit.
             if (PctRect.Contains(e.Location)) { if (PercentRequested != null) PercentRequested(); return; }
+            switch (IconAt(e.Location))
+            {
+                case 1: if (ClickToggle != null) ClickToggle(); return;
+                case 2: if (OpenPanel != null) OpenPanel(); return;
+                case 4: if (LockToggle != null) LockToggle(); return;
+                case 5: if (QuitRequested != null) QuitRequested(); return;
+            }
             if (DragRect.Contains(e.Location))
             {
                 _dragging = true;
                 SetFromMouse(e.X);
                 return;
             }
-            if (ClickRect.Contains(e.Location)) { if (ClickToggle != null) ClickToggle(); return; }
-            if (PanelRect.Contains(e.Location)) { if (OpenPanel != null) OpenPanel(); return; }
-            if (LockRect.Contains(e.Location)) { if (LockToggle != null) LockToggle(); return; }
-            if (QuitRect.Contains(e.Location)) { if (QuitRequested != null) QuitRequested(); return; }
         }
 
         protected override void OnMouseMove(MouseEventArgs e)
         {
-            if (_dragging) { SetFromMouse(e.X); return; }
+            if (_dragging)
+            {
+                // The button can come up outside the bar, and then OnMouseUp is
+                // never called: without this, moving back over the bar keeps
+                // scrubbing the opacity with no button held.
+                if ((Control.MouseButtons & MouseButtons.Left) == 0) { _dragging = false; }
+                else { SetFromMouse(e.X); return; }
+            }
             int was = _hover;
+            int icon = IconAt(e.Location);
             _hover = PctRect.Contains(e.Location) ? 3
-                   : DragRect.Contains(e.Location) ? 0
-                   : ClickRect.Contains(e.Location) ? 1
-                   : PanelRect.Contains(e.Location) ? 2
-                   : LockRect.Contains(e.Location) ? 4
-                   : QuitRect.Contains(e.Location) ? 5 : -1;
+                   : icon >= 0 ? icon
+                   : DragRect.Contains(e.Location) ? 0 : -1;
             if (_hover != was) Render();
             Cursor = _hover == 3 ? Cursors.IBeam : (_hover >= 0 ? Cursors.Hand : Cursors.Default);
             base.OnMouseMove(e);
@@ -2187,6 +2212,21 @@ namespace PipFadeUI
             if (LockOn == on) return;
             LockOn = on;
             Render();
+        }
+
+        // Is a fade in flight? The main loop uses this to decide whether it has
+        // to pump at frame rate: a fade needs every tick to look smooth, while a
+        // bar that is simply sitting there does not.
+        public bool Animating
+        {
+            get
+            {
+                // The main loop asks this every tick, including the tick where
+                // the bar is being released, so a disposed timer must answer
+                // "no" rather than throw inside the message loop.
+                if (_gone || _fade == null) return false;
+                return _fade.Enabled && Math.Abs(_target - _factor) > 0.01;
+            }
         }
 
         public void FadeIn()
@@ -3712,6 +3752,11 @@ $script:StripFor    = [IntPtr]::Zero
 $script:StripShownAt = [DateTime]::MinValue
 $script:StripHideAt = [DateTime]::MinValue
 $script:StripPlaced  = ''       # last window rect the bar was placed at
+# Bumped every time a player is raised. Both the player and the bar live in the
+# topmost band, where the most recent raise wins, so the bar has to know that
+# something was raised above it rather than assume its place is still good.
+$script:RaiseGen    = 0
+$script:StripZGen   = -1
 $script:Watcher     = $null    # native window-shown hook, created at start
 $script:LastRaise   = [DateTime]::MinValue
 $script:RaiseAt     = [DateTime]::MinValue
@@ -4048,13 +4093,36 @@ function Place-Strip($pip) {
         # a very short player: sit just inside the bottom edge
         $y = $pip.Y + [Math]::Max(2, $pip.H - $s.Height - 2)
     }
-    # Step-Strip runs every 16 ms while the pointer is over the player, and
-    # SetWindowPos inside the topmost band re-asserts z-order every time. Skip
-    # it when the bar is already exactly where it belongs, which is the common
-    # case: the player has not moved since the last tick.
     $key = '{0},{1},{2},{3}' -f $x, $y, $s.Width, $s.Height
-    if ($script:StripPlaced -eq $key) { return }
+
+    # Moving the window is what the key is for: the common tick is "the player
+    # has not moved", and SetWindowPos with a new size is the expensive part.
+    $moved = ($script:StripPlaced -ne $key)
+
+    # Z-order is a different question, and skipping it was the bug behind
+    # "the controls only work after I leave and come back". The player is a
+    # topmost window too, and Keep-PlayersOnTop raises it whenever anything
+    # covers it or the foreground changes. Both windows then sit in the topmost
+    # band in raise order, so a player raised after the bar buries the bar:
+    # it still paints, but every click lands on the video underneath, and the
+    # bar only comes back on top when it is hidden and shown again.
+    $buried = ($script:StripZGen -ne $script:RaiseGen)
+    if (-not $moved -and -not $buried -and $s.Visible) {
+        # Last resort, and the honest test: if the pointer is over the bar but
+        # the window manager says the pointer is over something else, the bar
+        # has lost the topmost band. Re-raise it rather than wait for a hint.
+        $probe = New-Object PipFade.Win+POINT
+        [void][PipFade.Win]::GetCursorPos([ref]$probe)
+        $b = $s.Bounds
+        if ($probe.X -ge $b.X -and $probe.X -lt ($b.X + $b.Width) -and
+            $probe.Y -ge $b.Y -and $probe.Y -lt ($b.Y + $b.Height)) {
+            if (-not [PipFade.Finder]::IsOurs([PipFade.Win]::WindowFromPoint($probe))) { $buried = $true }
+        }
+    }
+    if (-not $moved -and -not $buried) { return }
+
     $script:StripPlaced = $key
+    $script:StripZGen = $script:RaiseGen
 
     $HWND_TOPMOST = [IntPtr](-1)
     $SWP_NOACTIVATE = 0x0010
@@ -4094,6 +4162,77 @@ function Test-CursorNearPlayer {
             $pt.Y -ge $p.Y -and $pt.Y -lt ($p.Y + $p.H)) { return $true }
     }
     return $false
+}
+
+# ---------------------------------------------------------------- playback
+# Windows already knows whether the video is playing: it is the same source the
+# play/pause key acts on and the volume overlay reads. The bar asks that source,
+# so it can hold itself open while the video is paused rather than fading out
+# the moment the pointer leaves. None of this is required for the app to run:
+# if the API is missing the bar behaves exactly as it did before.
+$script:SmtcManager = $null
+$script:SmtcBroken  = $false
+$script:MediaPaused = $false
+$script:MediaAt     = [DateTime]::MinValue
+
+# Waits on a WinRT IAsyncOperation from Windows PowerShell 5.1, which has no
+# await keyword. The AsTask helper lives in System.Runtime.WindowsRuntime.
+function Wait-WinRt($op, [Type]$resultType) {
+    # Windows PowerShell 5.1 does not load this by default, and without it the
+    # AsTask helper below is not in the type table.
+    Add-Type -AssemblyName System.Runtime.WindowsRuntime -ErrorAction Stop
+    $asTask = [System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
+        $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and
+        $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1'
+    } | Select-Object -First 1
+    if (-not $asTask) { throw 'no AsTask helper' }
+    $task = $asTask.MakeGenericMethod($resultType).Invoke($null, @($op))
+    if (-not $task.Wait(1500)) { throw 'timed out' }
+    return $task.Result
+}
+
+function Get-MediaPaused {
+    if ($script:SmtcBroken) { return $false }
+    if ($null -eq $script:SmtcManager) {
+        $mgrType = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType = WindowsRuntime]
+        $script:SmtcManager = Wait-WinRt ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager]::RequestAsync()) $mgrType
+    }
+    $any = $false
+    $paused = $false
+    foreach ($s in $script:SmtcManager.GetSessions()) {
+        # A browser tab counts only if it is one of the browsers the player can
+        # come from, so a music app left paused does not hold the bar open.
+        $app = ''
+        try { $app = [string]$s.SourceAppUserModelId } catch { }
+        if ($app -notmatch '(?i)brave|chrome|msedge|vivaldi|opera') { continue }
+        $any = $true
+        $st = ''
+        try { $st = [string]$s.GetPlaybackInfo().PlaybackStatus } catch { continue }
+        if ($st -eq 'Playing') { $paused = $false; break }
+        # Only Paused counts. A session that reports Stopped has usually had its
+        # video closed, and holding the bar open over an empty player is worse
+        # than letting it fade.
+        if ($st -eq 'Paused') { $paused = $true }
+    }
+    if (-not $any) { return $false }
+    return $paused
+}
+
+# Polled rather than evented: the WinRT change event would need its own message
+# pump and a COM apartment, and a value that only has to be right within half a
+# second does not justify either.
+function Update-MediaState {
+    $now = [DateTime]::UtcNow
+    if ($now -lt $script:MediaAt) { $script:MediaAt = $now }
+    if (($now - $script:MediaAt).TotalMilliseconds -lt 600) { return }
+    $script:MediaAt = $now
+    if (-not $script:Players -or $script:Players.Count -eq 0) { $script:MediaPaused = $false; return }
+    try { $script:MediaPaused = Get-MediaPaused }
+    catch {
+        # First failure means this Windows cannot do it at all; stop asking.
+        $script:MediaPaused = $false
+        $script:SmtcBroken = $true
+    }
 }
 
 # Called from the loop. Shows the strip while the cursor is over a player,
@@ -4140,6 +4279,33 @@ function Step-Strip($players) {
     foreach ($p in $players) {
         if ($pt.X -ge $p.X -and $pt.X -lt ($p.X + $p.W) -and
             $pt.Y -ge $p.Y -and $pt.Y -lt ($p.Y + $p.H)) { $under = $p; break }
+    }
+
+    # The pointer resting on the bar itself has to count, even where the bar
+    # hangs past the player's edge. A narrow player gets a bar wider than it is
+    # (the bar has a floor so the rail stays usable), so its overhang sits on no
+    # player at all; without this, moving onto that overhang made the bar
+    # disappear from under the pointer.
+    if (-not $under -and $script:Strip -and $script:Strip.Visible) {
+        $b = $script:Strip.Bounds
+        if ($pt.X -ge $b.X -and $pt.X -lt ($b.X + $b.Width) -and
+            $pt.Y -ge $b.Y -and $pt.Y -lt ($b.Y + $b.Height)) {
+            foreach ($p in $players) {
+                if ($p.Handle -eq $script:StripFor) { $under = $p; break }
+            }
+        }
+    }
+
+    # A paused video is a still frame the user is looking at, not something to
+    # stay out of the way of, so the bar holds itself open instead of fading the
+    # moment the pointer drifts off. It stays on the player it belongs to; if it
+    # was never shown, or the player it was on has gone, it opens on whichever
+    # player is there.
+    if (-not $under -and $script:MediaPaused -and $players.Count -gt 0) {
+        foreach ($p in $players) {
+            if ($script:Strip -and $script:StripFor -eq $p.Handle) { $under = $p; break }
+        }
+        if (-not $under) { $under = $players[0] }
     }
 
     if ($under) {
@@ -4191,11 +4357,16 @@ function Keep-PlayersOnTop($players) {
     if (-not $due) { return }
 
     $me = [uint32]$PID
+    $raised = $false
     foreach ($p in $players) {
         if ($forced -or [PipFade.Finder]::IsCovered($p.Handle, $me)) {
             [PipFade.Finder]::Raise($p.Handle)
+            $raised = $true
         }
     }
+    # A raise puts the player above the bar, which sits in the same band. Tell
+    # Place-Strip so it re-asserts itself instead of trusting its last place.
+    if ($raised) { $script:RaiseGen++ }
     $script:LastRaise = $now
     $script:RaiseAt = [DateTime]::MinValue
 }
@@ -4980,17 +5151,42 @@ try {
         # strip is on screen, the pointer is over a player, or a window is being
         # dragged, the wait shrinks so the bar reacts within a frame or two.
         $now = [DateTime]::UtcNow
+        # Cheap and throttled inside: one WinRT query every 600 ms at most, and
+        # nothing at all when there are no players open.
+        Update-MediaState
+        # Three levels rather than two. Full speed is only needed when the
+        # pointer can move onto the bar within a frame, or while something is
+        # being dragged. A paused player with the pointer away is a static
+        # picture: the bar only has to hold its place on top, and doing that
+        # 60 times a second costs more than it is worth.
+        $near = Test-CursorNearPlayer
+        $visible = ($script:Strip -and $script:Strip.Visible)
         $hot = $script:Config.HoverControls -and (
                    ($now - $script:MovedAt).TotalMilliseconds -lt 400 -or
-                   ($script:Strip -and $script:Strip.Visible) -or
-                   (Test-CursorNearPlayer))
+                   $visible -or $near)
         # An open percentage field also keeps the loop quick: its Enter/Escape
         # and the bar cleanup have to land promptly.
         if ($script:StripEntry) { $hot = $true }
         # Hold-to-hide has to notice the key coming up within a frame, so the
         # wait shrinks while a hold is in progress.
         $holding = ($script:Config.HideMode -eq 'hold') -and ($script:HoldActive -or $script:HiddenFor -ne [IntPtr]::Zero)
-        Wait-Messages ($(if ($hot -or $holding) { 16 } else { 250 }))
+        # The idle wait sets how stale the pointer reading can be, and that
+        # staleness is the delay the user feels: at a quarter second a pointer
+        # that arrives just after a check can cross a 24px icon and stop before
+        # the next one, so the bar seems to need a second pass to notice. While
+        # a player is open the wait stays short enough that the pointer cannot
+        # get far without being seen; it only relaxes once there is nothing to
+        # hover over, which is the case where waiting costs nothing.
+        #
+        # Frame rate is reserved for what actually needs it: a fade in flight,
+        # the pointer close enough to hit an icon, a key being held. A bar that
+        # is merely on screen - which is every second of a paused video - only
+        # needs to hold its place, and 60ms does that for a fortieth of the cost.
+        $animating = ($script:Strip -and $script:Strip.Animating)
+        $wait = 250
+        if ($hot -or $holding) { $wait = 60 }
+        if ($holding -or $near -or $script:StripEntry -or $animating) { $wait = 16 }
+        Wait-Messages $wait
         [System.Windows.Forms.Application]::DoEvents()
 
         if ($script:Watcher) {
