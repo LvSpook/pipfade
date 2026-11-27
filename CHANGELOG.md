@@ -37,10 +37,13 @@ The first release. Everything below is what that means in practice.
   optional shortcut.
 - **Hover bar.** Percentage, slider and four buttons inside the player, fading in
   when you point at it and never taking focus.
-- **Open while paused.** A paused video keeps the bar open, because a still frame is
-  what you are looking at rather than something to stay out of the way of.
-- **Clicks that land.** The bar puts itself back above the player whenever the player
-  is raised over it, so a button is never a window you can see but not press.
+- **Clicks that land.** Every pixel of the bar answers the mouse, including the
+  gaps between controls, and the bar puts itself back above the player whenever
+  the player is raised over it - so a button is never a window you can see but
+  not press.
+- **Almost no idle cost.** The resident loop sleeps until something actually
+  happens. A hotkey, a click, a new player or the pointer arriving on one wakes
+  it in about 30ms; a still pointer costs nothing.
 
 ### Living on the desktop
 

@@ -59,8 +59,13 @@ inherits it at every size.
 - The bar sits in the same topmost band as the player, so it re-asserts its place
   after anything raises the player above it. That is a z-order rule, not a visual
   one, but it is what makes the bar's targets feel like targets.
-- A paused player holds the bar open. Absence is the default state of this
-  surface; a still frame is the one case where presence is not in the way.
+- Every pixel of the bar answers the mouse. A per-pixel layered window passes
+  clicks through whatever it leaves transparent, so the bar paints a one-alpha
+  plate under its controls; the gaps between them are targets, not holes onto
+  the video.
+- No polling for the pointer. The resident loop sleeps on the message queue, and
+  a native watch reports the pointer arriving on a player and leaving it, so a
+  still pointer costs nothing and an arriving one is seen within 25ms.
 - 18px page margin, 8px vertical rhythm between switch rows (28px rows).
 - One-pixel strokes, never two: a doubled edge reads as a seam.
 

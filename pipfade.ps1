@@ -126,6 +126,111 @@ namespace PipFade
         [DllImport("user32.dll")] public static extern bool UnhookWinEvent(IntPtr hook);
         [DllImport("user32.dll")] public static extern uint MsgWaitForMultipleObjects(
             uint count, IntPtr handles, bool waitAll, uint millis, uint mask);
+        [DllImport("user32.dll")] public static extern uint GetQueueStatus(uint flags);
+
+        // GetQueueStatus answers "input" for flags a dispatched message already
+        // consumed, so it says yes to an empty queue. PeekMessage is the authority
+        // on whether there is something to dispatch, and PM_NOREMOVE leaves it in
+        // place for the DoEvents that follows.
+        [StructLayout(LayoutKind.Sequential)]
+        public struct MSG
+        {
+            public IntPtr hwnd; public uint message; public IntPtr wParam, lParam;
+            public uint time; public int x, y;
+        }
+        public const uint PM_NOREMOVE = 0x0000;
+        [DllImport("user32.dll")]
+        public static extern bool PeekMessage(out MSG msg, IntPtr hwnd, uint min, uint max, uint remove);
+
+        // The idle wait, in one call. Every marshalled call made from PowerShell
+        // costs around half a millisecond before the p/invoke itself is even
+        // reached, and the old wait made several per tick - more than the work
+        // the tick existed to do. Looping here means the resident loop makes one
+        // call per pass and pays that cost once.
+        //
+        // The phantom guard is kept: MsgWait can report input while the queue is
+        // genuinely empty (a sent message, or one already handled), and
+        // re-waiting inside C# for the rest of the budget costs nothing.
+        public static bool WaitMessages(uint millis) {
+            const uint QS_INPUT = 0x04BF;
+            int end = Environment.TickCount + (int)millis;
+            int phantoms = 0;
+            while (true) {
+                int left = end - Environment.TickCount;
+                if (left <= 0) return false;
+                MsgWaitForMultipleObjects(0, IntPtr.Zero, false, (uint)left, QS_INPUT);
+                if ((GetQueueStatus(QS_INPUT) & 0xFFFF) != 0) return true;
+                phantoms++;
+                // After the second empty wake-up the wait is not trustworthy, so
+                // sleep out the budget instead of asking again: sleeping is what
+                // the wait was for and it cannot spin.
+                if (phantoms >= 2) {
+                    System.Threading.Thread.Sleep(Math.Max(1, left));
+                    return false;
+                }
+            }
+        }
+
+        // The idle wait for the resident loop, with the pointer watch folded in.
+        //
+        // An idle pass is not free in PowerShell: the loop body marshals dozens
+        // of small calls, so at four passes a second the deciding-that-nothing-
+        // happened was most of this process's CPU. One native call per idle
+        // period replaces the wait and the cursor test together.
+        //
+        // The watch is edge-triggered. It reports the pointer arriving on a
+        // player and it reports it leaving, and between those two it says
+        // nothing at all - so a pointer parked on a video, which is the ordinary
+        // case, costs one wake instead of one wake every 25ms forever.
+        static int[] _watch = new int[0];
+        static int _margin = 40;
+        static bool _wasNear;
+
+        public static void SetWatchRects(int[] rects, int margin) {
+            _watch = rects != null ? rects : new int[0];
+            _margin = margin;
+        }
+
+        static bool NearWatch(POINT p) {
+            for (int i = 0; i + 3 < _watch.Length; i += 4) {
+                if (p.X >= _watch[i] - _margin && p.X < _watch[i] + _watch[i + 2] + _margin &&
+                    p.Y >= _watch[i + 1] - _margin && p.Y < _watch[i + 1] + _watch[i + 3] + _margin) return true;
+            }
+            return false;
+        }
+
+        public static bool IdleWait(uint millis) {
+            // The whole idle period is served here, in 25ms slices, so the
+            // PowerShell side pays for one call per pass instead of six.
+            //
+            // Sleeping rather than waiting on the message queue is deliberate:
+            // MsgWaitForMultipleObjects returns within a couple of milliseconds
+            // claiming input that GetQueueStatus then reports as absent, and each
+            // phantom wake costs a full PowerShell loop pass - more than the sleep
+            // it replaced. A sleep cannot spin, and asking the queue after it
+            // still finds a real message (a hotkey, a click) within 25ms.
+            //
+            // PeekMessage, not GetQueueStatus, decides whether a message is real.
+            // GetQueueStatus reports INPUT from flags that a dispatched message
+            // already consumed, so it answers "yes" to an empty queue and the loop
+            // would come back early on nearly every slice.
+            int end = Environment.TickCount + (int)millis;
+            MSG msg;
+            while (true) {
+                int left = end - Environment.TickCount;
+                if (left <= 0) return false;
+                System.Threading.Thread.Sleep(left < 25 ? left : 25);
+                if (PeekMessage(out msg, IntPtr.Zero, 0, 0, PM_NOREMOVE)) return true;
+                if (_watch.Length == 0) continue;
+                POINT p;
+                if (!GetCursorPos(out p)) continue;
+                bool near = NearWatch(p);
+                // Report the edges only: arriving, and leaving. A pointer that
+                // simply stays put is not news, and repeating it woke the loop
+                // every 25ms for as long as someone watched a video.
+                if (near != _wasNear) { _wasNear = near; return true; }
+            }
+        }
     }
 
     // Watches for top-level windows appearing, so a new mini player is picked up
@@ -1904,6 +2009,17 @@ namespace PipFadeUI
         public Rectangle LockRect { get { return new Rectangle(SliderRight + 4 + IconBox * 2, (BarH - IconBox) / 2, IconBox, IconBox); } }
         public Rectangle QuitRect { get { return new Rectangle(SliderRight + 4 + IconBox * 3, (BarH - IconBox) / 2, IconBox, IconBox); } }
 
+        // The strip's whole client area is one continuous target. Not just the
+        // painted parts: a press a pixel wide of the last icon used to fall
+        // through to the video, and in a mini player a stray click on the video
+        // toggles playback - so a near miss did not feel like a miss, it felt
+        // like the wrong button. Nothing outside the window passes through, so
+        // the video is still clickable either side of the bar.
+        public Rectangle BodyRect
+        {
+            get { return new Rectangle(0, 0, Math.Max(1, Width), BarH); }
+        }
+
         // 0..100 for display and for the typing field.
         public int Percent { get { return (int)Math.Round(Value / 255.0 * 100); } }
 
@@ -1956,6 +2072,21 @@ namespace PipFadeUI
                 _canvasG.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
             }
             _canvasG.Clear(Color.Transparent);
+            // Hit testing of a layered window follows its alpha: a pixel at
+            // alpha zero lets the mouse straight through to whatever is behind.
+            // Clearing to nothing therefore punched invisible holes in the bar
+            // between the rail and the icons, and every click that landed in one
+            // went to the video instead - which read as the bar ignoring the
+            // press. One step of alpha (1/255, invisible on screen) across the
+            // bar's own body makes it one continuous target instead.
+            //
+            // The plate stops at the body rather than covering the whole window:
+            // the few pixels of margin at each end stay transparent, so a click
+            // there reaches the video exactly as it did before instead of being
+            // swallowed by a surface that draws nothing at that point.
+            Rectangle hitBand = BodyRect;
+            using (SolidBrush plate = new SolidBrush(Color.FromArgb(_factor > 0.15 ? 1 : 0, 0, 0, 0)))
+                _canvasG.FillRectangle(plate, hitBand);
             DrawBar(_canvasG, a);
             ApplyLayered(_canvas);
         }
@@ -2109,29 +2240,53 @@ namespace PipFadeUI
         }
 
         // ------------------------------------------------------------- mouse
-        // A 24px icon with no tolerance is what made the bar feel finicky: a
-        // press one pixel wide of the glyph did nothing at all. Icons are tested
-        // first, with a couple of pixels of slack, because an icon is a discrete
-        // target while the rail is a continuous area it can afford to yield.
-        bool Hit(Rectangle r, Point p, int slop)
+        // Two things made a press feel unreliable even once the window was on
+        // top. The first was the bar's own alpha: a layered window only takes
+        // the mouse where it has painted, so the gaps between the controls were
+        // holes a click fell straight through (see Render).
+        //
+        // The second was the hit testing itself. Four 24px icons sit shoulder to
+        // shoulder, so "the first rectangle within a couple of pixels" let the
+        // left edge of one icon fire its neighbour. The icons are now four
+        // contiguous columns resolved by arithmetic, which cannot overlap, and a
+        // column counts for the bar's whole height: vertically there is nothing
+        // else to hit, so demanding the middle 24 pixels of a 34 pixel strip was
+        // asking the pointer to be more precise than it needs to be.
+        int IconColumn(Point p)
         {
-            return p.X >= r.Left - slop && p.X < r.Right + slop &&
-                   p.Y >= r.Top - slop && p.Y < r.Bottom + slop;
+            int left = SliderRight + 4;
+            if (p.Y < 0 || p.Y >= BarH) return -1;
+            if (p.X < left || p.X >= left + IconBox * 4) return -1;
+            return (p.X - left) / IconBox;
         }
 
         int IconAt(Point p)
         {
-            if (Hit(ClickRect, p, 2)) return 1;
-            if (Hit(PanelRect, p, 2)) return 2;
-            if (Hit(LockRect, p, 2)) return 4;
-            if (Hit(QuitRect, p, 2)) return 5;
+            switch (IconColumn(p))
+            {
+                case 0: return 1;
+                case 1: return 2;
+                case 2: return 4;
+                case 3: return 5;
+            }
             return -1;
+        }
+
+        // The percentage well is small because the number is small, but it is a
+        // discrete target like an icon, so it gets the same treatment. It also
+        // absorbs the two or three pixels before the rail starts, so there is no
+        // hairline gap between the two where a press does nothing.
+        bool PctHit(Point p)
+        {
+            Rectangle r = PctRect;
+            return p.Y >= 0 && p.Y < BarH &&
+                   p.X >= r.Left - 2 && p.X < r.Right + 3;
         }
 
         protected override void OnMouseDown(MouseEventArgs e)
         {
             if (e.Button != MouseButtons.Left) { base.OnMouseDown(e); return; }
-            if (PctRect.Contains(e.Location)) { if (PercentRequested != null) PercentRequested(); return; }
+            if (PctHit(e.Location)) { if (PercentRequested != null) PercentRequested(); return; }
             switch (IconAt(e.Location))
             {
                 case 1: if (ClickToggle != null) ClickToggle(); return;
@@ -2159,7 +2314,7 @@ namespace PipFadeUI
             }
             int was = _hover;
             int icon = IconAt(e.Location);
-            _hover = PctRect.Contains(e.Location) ? 3
+            _hover = PctHit(e.Location) ? 3
                    : icon >= 0 ? icon
                    : DragRect.Contains(e.Location) ? 0 : -1;
             if (_hover != was) Render();
@@ -2212,6 +2367,24 @@ namespace PipFadeUI
             if (LockOn == on) return;
             LockOn = on;
             Render();
+        }
+
+        // The bar can arrive under a pointer that is already sitting still: the
+        // pointer never moves, so Windows never sends a move message, and the
+        // control underneath it stays highlighted as nothing. Asking where the
+        // pointer is when the bar is placed costs one call and makes the first
+        // frame correct.
+        public void SyncHover()
+        {
+            if (InvokeRequired) { BeginInvoke((MethodInvoker)delegate { SyncHover(); }); return; }
+            if (_gone || !Visible) return;
+            Point p = PointToClient(Cursor.Position);
+            int was = _hover;
+            int icon = IconAt(p);
+            _hover = PctHit(p) ? 3
+                   : icon >= 0 ? icon
+                   : DragRect.Contains(p) ? 0 : -1;
+            if (_hover != was) Render();
         }
 
         // Is a fade in flight? The main loop uses this to decide whether it has
@@ -3901,6 +4074,7 @@ function Adopt-Existing {    $all = @([PipFade.Finder]::Find())
     # adopt into the single-player view as well, so the bar and the panel know
     # about it before the first sweep
     $script:Players = @($all)
+    Sync-WatchRects
     $script:Dirty = $true
     return $all.Count
 }
@@ -4141,6 +4315,28 @@ function Refresh-PlayerRects {
         if ($fresh) { $out += $fresh }
     }
     $script:Players = $out
+    Sync-WatchRects
+}
+
+# Hands the current player rects to the native idle wait, which looks at the
+# pointer against them while it sleeps. Without this the sleep would be blind:
+# the loop would only notice the pointer on the next pass, which is the quarter
+# of a second the whole idle path is trying not to spend.
+function Sync-WatchRects {
+    if ($script:Config.HoverControls -and $script:Players -and $script:Players.Count -gt 0) {
+        $flat = New-Object 'int[]' ($script:Players.Count * 4)
+        $i = 0
+        foreach ($p in $script:Players) {
+            $flat[$i] = $p.X
+            $flat[$i + 1] = $p.Y
+            $flat[$i + 2] = $p.W
+            $flat[$i + 3] = $p.H
+            $i += 4
+        }
+        [PipFade.Win]::SetWatchRects($flat, 40)
+    } else {
+        [PipFade.Win]::SetWatchRects($null, 40)
+    }
 }
 
 # Is this handle one of the players we already know about?
@@ -4152,6 +4348,13 @@ function Test-PlayerHandle([IntPtr]$h) {
 
 # Cheap test: is the pointer inside any known player's rect? Uses the stored
 # rects, so it costs one GetCursorPos and no window calls at all.
+#
+# Pixel-exact on purpose. A margin here would make the loop consider itself hot
+# whenever the pointer merely parks nearby, which is the common idle case: an
+# idle pointer sitting a few pixels off a video would then spin the loop at the
+# short wait forever. The warning that the pointer is approaching comes from the
+# native idle wait instead, which looks every 25ms and wakes the loop the moment
+# the pointer really is inside a player.
 function Test-CursorNearPlayer {
     if (-not $script:Config.HoverControls) { return $false }
     if (-not $script:Players -or $script:Players.Count -eq 0) { return $false }
@@ -4162,77 +4365,6 @@ function Test-CursorNearPlayer {
             $pt.Y -ge $p.Y -and $pt.Y -lt ($p.Y + $p.H)) { return $true }
     }
     return $false
-}
-
-# ---------------------------------------------------------------- playback
-# Windows already knows whether the video is playing: it is the same source the
-# play/pause key acts on and the volume overlay reads. The bar asks that source,
-# so it can hold itself open while the video is paused rather than fading out
-# the moment the pointer leaves. None of this is required for the app to run:
-# if the API is missing the bar behaves exactly as it did before.
-$script:SmtcManager = $null
-$script:SmtcBroken  = $false
-$script:MediaPaused = $false
-$script:MediaAt     = [DateTime]::MinValue
-
-# Waits on a WinRT IAsyncOperation from Windows PowerShell 5.1, which has no
-# await keyword. The AsTask helper lives in System.Runtime.WindowsRuntime.
-function Wait-WinRt($op, [Type]$resultType) {
-    # Windows PowerShell 5.1 does not load this by default, and without it the
-    # AsTask helper below is not in the type table.
-    Add-Type -AssemblyName System.Runtime.WindowsRuntime -ErrorAction Stop
-    $asTask = [System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
-        $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and
-        $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1'
-    } | Select-Object -First 1
-    if (-not $asTask) { throw 'no AsTask helper' }
-    $task = $asTask.MakeGenericMethod($resultType).Invoke($null, @($op))
-    if (-not $task.Wait(1500)) { throw 'timed out' }
-    return $task.Result
-}
-
-function Get-MediaPaused {
-    if ($script:SmtcBroken) { return $false }
-    if ($null -eq $script:SmtcManager) {
-        $mgrType = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType = WindowsRuntime]
-        $script:SmtcManager = Wait-WinRt ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager]::RequestAsync()) $mgrType
-    }
-    $any = $false
-    $paused = $false
-    foreach ($s in $script:SmtcManager.GetSessions()) {
-        # A browser tab counts only if it is one of the browsers the player can
-        # come from, so a music app left paused does not hold the bar open.
-        $app = ''
-        try { $app = [string]$s.SourceAppUserModelId } catch { }
-        if ($app -notmatch '(?i)brave|chrome|msedge|vivaldi|opera') { continue }
-        $any = $true
-        $st = ''
-        try { $st = [string]$s.GetPlaybackInfo().PlaybackStatus } catch { continue }
-        if ($st -eq 'Playing') { $paused = $false; break }
-        # Only Paused counts. A session that reports Stopped has usually had its
-        # video closed, and holding the bar open over an empty player is worse
-        # than letting it fade.
-        if ($st -eq 'Paused') { $paused = $true }
-    }
-    if (-not $any) { return $false }
-    return $paused
-}
-
-# Polled rather than evented: the WinRT change event would need its own message
-# pump and a COM apartment, and a value that only has to be right within half a
-# second does not justify either.
-function Update-MediaState {
-    $now = [DateTime]::UtcNow
-    if ($now -lt $script:MediaAt) { $script:MediaAt = $now }
-    if (($now - $script:MediaAt).TotalMilliseconds -lt 600) { return }
-    $script:MediaAt = $now
-    if (-not $script:Players -or $script:Players.Count -eq 0) { $script:MediaPaused = $false; return }
-    try { $script:MediaPaused = Get-MediaPaused }
-    catch {
-        # First failure means this Windows cannot do it at all; stop asking.
-        $script:MediaPaused = $false
-        $script:SmtcBroken = $true
-    }
 }
 
 # Called from the loop. Shows the strip while the cursor is over a player,
@@ -4296,18 +4428,6 @@ function Step-Strip($players) {
         }
     }
 
-    # A paused video is a still frame the user is looking at, not something to
-    # stay out of the way of, so the bar holds itself open instead of fading the
-    # moment the pointer drifts off. It stays on the player it belongs to; if it
-    # was never shown, or the player it was on has gone, it opens on whichever
-    # player is there.
-    if (-not $under -and $script:MediaPaused -and $players.Count -gt 0) {
-        foreach ($p in $players) {
-            if ($script:Strip -and $script:StripFor -eq $p.Handle) { $under = $p; break }
-        }
-        if (-not $under) { $under = $players[0] }
-    }
-
     if ($under) {
         if (-not $script:Strip -or $script:StripFor -ne $under.Handle) {
             if ($script:Strip -and $script:Strip.Visible) { $script:Strip.Hide() }
@@ -4323,6 +4443,11 @@ function Step-Strip($players) {
         } else {
             $script:Strip.Reveal()
         }
+        # The bar can be placed under a pointer that has not moved, and it can
+        # also move out from under one that is still: either way Windows sends
+        # no mouse message, so the highlight would be stale or absent. One call
+        # per tick keeps it honest, and it only repaints when the answer changed.
+        $script:Strip.SyncHover()
         $script:StripHideAt = $now.AddMilliseconds(450)
         return
     }
@@ -4374,9 +4499,19 @@ function Keep-PlayersOnTop($players) {
 # Blocks until a window message arrives or the timeout expires. Used instead of
 # Start-Sleep so the hook callbacks are dispatched the instant Windows delivers
 # them, without burning CPU while nothing happens.
+#
+# Blocks until a window message arrives or the timeout expires, so the hook
+# callbacks are dispatched the instant Windows delivers them without burning CPU
+# while nothing happens.
+#
+# The whole wait lives in C# (PipFade.Win.WaitMessages) because every call made
+# from PowerShell carries marshalling overhead of roughly half a millisecond.
+# Measured on this machine, the PowerShell version of this function - one
+# MsgWaitForMultipleObjects, one GetQueueStatus, two DateTime reads and a
+# comparison per pass, four passes a second - cost about 1% of a core to do
+# nothing but sleep. One call per pass removed nearly all of it.
 function Wait-Messages([int]$ms) {
-    $QS_ALLINPUT = 0x04FF
-    [void][PipFade.Win]::MsgWaitForMultipleObjects(0, [IntPtr]::Zero, $false, $ms, $QS_ALLINPUT)
+    [void][PipFade.Win]::WaitMessages([uint32]$ms)
 }
 
 # Applies to a single handle the watcher just reported, without enumerating the
@@ -4474,6 +4609,7 @@ function Step {
 
     Update-Status $players.Count
     $script:Players = $players
+    Sync-WatchRects
 }
 
 
@@ -5151,42 +5287,42 @@ try {
         # strip is on screen, the pointer is over a player, or a window is being
         # dragged, the wait shrinks so the bar reacts within a frame or two.
         $now = [DateTime]::UtcNow
-        # Cheap and throttled inside: one WinRT query every 600 ms at most, and
-        # nothing at all when there are no players open.
-        Update-MediaState
-        # Three levels rather than two. Full speed is only needed when the
-        # pointer can move onto the bar within a frame, or while something is
-        # being dragged. A paused player with the pointer away is a static
-        # picture: the bar only has to hold its place on top, and doing that
-        # 60 times a second costs more than it is worth.
+        # What this pass has to decide is only whether the loop needs to run at
+        # frame rate: a fade in flight, a key being held down, an open percentage
+        # field. Everything else - a click on the bar, a hotkey, a player
+        # appearing or moving, the pointer arriving on a video - arrives as a
+        # message or as an edge from the native watch, and wakes the loop by
+        # itself without any polling here.
         $near = Test-CursorNearPlayer
         $visible = ($script:Strip -and $script:Strip.Visible)
         $hot = $script:Config.HoverControls -and (
-                   ($now - $script:MovedAt).TotalMilliseconds -lt 400 -or
-                   $visible -or $near)
-        # An open percentage field also keeps the loop quick: its Enter/Escape
-        # and the bar cleanup have to land promptly.
-        if ($script:StripEntry) { $hot = $true }
+                    ($now - $script:MovedAt).TotalMilliseconds -lt 400 -or
+                    $visible -or $near)
         # Hold-to-hide has to notice the key coming up within a frame, so the
         # wait shrinks while a hold is in progress.
         $holding = ($script:Config.HideMode -eq 'hold') -and ($script:HoldActive -or $script:HiddenFor -ne [IntPtr]::Zero)
-        # The idle wait sets how stale the pointer reading can be, and that
-        # staleness is the delay the user feels: at a quarter second a pointer
-        # that arrives just after a check can cross a 24px icon and stop before
-        # the next one, so the bar seems to need a second pass to notice. While
-        # a player is open the wait stays short enough that the pointer cannot
-        # get far without being seen; it only relaxes once there is nothing to
-        # hover over, which is the case where waiting costs nothing.
-        #
-        # Frame rate is reserved for what actually needs it: a fade in flight,
-        # the pointer close enough to hit an icon, a key being held. A bar that
-        # is merely on screen - which is every second of a paused video - only
-        # needs to hold its place, and 60ms does that for a fortieth of the cost.
         $animating = ($script:Strip -and $script:Strip.Animating)
-        $wait = 250
-        if ($hot -or $holding) { $wait = 60 }
-        if ($holding -or $near -or $script:StripEntry -or $animating) { $wait = 16 }
-        Wait-Messages $wait
+        # Almost always a full second, because nothing actually waits on this
+        # number. What the budget controls is how often PowerShell pays for a
+        # pass at all, and a pass with nothing to do still costs about a
+        # millisecond of interpreter time - at four passes a second that was most
+        # of this process's CPU.
+        #
+        # The bar on screen is the one case that wants a short wait without being
+        # a fade: the grace period after the pointer leaves has to be honoured
+        # promptly, or the bar lingers for up to a second after the pointer has
+        # gone. That state is transient, so the cost is bounded.
+        $wait = 1000
+        if ($visible) { $wait = 60 }
+        if ($holding -or $script:StripEntry -or $animating) { $wait = 16 }
+        # Two different waits, because they do different jobs. While something is
+        # happening the loop must come back the moment a message arrives (a click
+        # on the bar, a key going up), so it waits on the message queue. While
+        # nothing is happening no message is expected that matters, and a message
+        # wait there is worse than useless: it wakes on input the queue does not
+        # actually hold, and every such wake costs a whole PowerShell pass. So
+        # the idle case sleeps, only waking early if the pointer reaches a player.
+        if ($hot -or $holding) { Wait-Messages $wait } else { [void][PipFade.Win]::IdleWait([uint32]$wait) }
         [System.Windows.Forms.Application]::DoEvents()
 
         if ($script:Watcher) {
@@ -5209,7 +5345,15 @@ try {
         }
 
         $now = [DateTime]::UtcNow
-        $sweepDue = ($now - $script:LastFull).TotalMilliseconds -gt 1000
+        # The sweep is a backstop, not the mechanism. A new player is caught by the
+        # window hooks the moment it appears, a player that moves is caught by the
+        # location-change hook, and the pointer reaching a player wakes the native
+        # wait within 25ms. What is left for the sweep is geometry settling after a
+        # drag and the once-over-everything keep-on-top check, and both of those
+        # tolerate a few seconds - which matters, because every pass of this loop
+        # costs about a millisecond of interpreter time whether or not it finds
+        # anything to do.
+        $sweepDue = ($now - $script:LastFull).TotalMilliseconds -gt 3000
         # a raise scheduled by a foreground change needs its own pass when due
         $raiseDue = ($script:RaiseAt -ne [DateTime]::MinValue -and $now -ge $script:RaiseAt)
         if ($script:Dirty -or $sweepDue -or $raiseDue) {
