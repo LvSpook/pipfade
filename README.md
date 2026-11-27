@@ -70,6 +70,7 @@ remember exactly how you left it.
 - A long binding or preset name left clipped says the rest of itself on hover
 - Tray icon with a dark menu that matches the panel
 - Starts with Windows, no console flash
+- Costs nothing to leave running: under 0.7% of one core, and most seconds at zero
 
 </td>
 </tr>
