@@ -50,7 +50,7 @@ remember exactly how you left it.
 - Each player remembers its size and position
 - Lock the frame so a stray drag cannot undo an arrangement
 - Works with two players at once, each with its own layout
-- Panel resizes like a normal window, from any edge or corner
+- Panel opens where you left it, always the same size
 
 </td>
 <td width="50%" valign="top">
@@ -66,7 +66,8 @@ remember exactly how you left it.
 
 - Thirteen rebindable hotkeys, recorded by pressing them
 - Four presets, each holding every setting, each with its own shortcut
-- System tray with the same menu
+- A long binding or preset name left clipped says the rest of itself on hover
+- Tray icon with a dark menu that matches the panel
 - Starts with Windows, no console flash
 
 </td>

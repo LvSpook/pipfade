@@ -24,9 +24,11 @@ The first release. Everything below is what that means in practice.
 
 - **Three-tab panel.** Controls, Hotkeys and Presets, in one small monochrome
   window with no title bar.
-- **Resizable.** Grab any edge or corner. The size and position are remembered, and
-  the contents keep a readable column in the middle instead of stretching a label
-  and its switch to opposite sides of a very wide window.
+- **One fixed size.** The panel holds every row at 360×470 and stays there, so
+  nothing moves under the pointer between visits. A binding or a preset name too
+  wide for its box shows the rest of itself in a tip when you hover over it.
+- **Remembers its spot.** The panel reopens where you last dragged it, clamped to
+  whatever screens are attached.
 - **Type an exact percentage.** Click the big number in the panel, or the percentage
   on the hover bar, and type the value you want.
 - **Thirteen rebindable hotkeys**, recorded by pressing the combination rather than
@@ -41,8 +43,10 @@ The first release. Everything below is what that means in practice.
 - **Tray icon** that survives an Explorer restart.
 - **Own taskbar button and icon**, rather than being folded into the PowerShell one.
 - **Starts with Windows**, with no console flash.
-- **Remembers the panel's own size and position**, clamped to the screen so it can
-  never reopen somewhere unreachable.
+- **The tray menu is dark**, so it does not arrive as a scrap of the light system
+  theme on a dark taskbar.
+- **Remembers the panel's own position**, clamped to the screen so it can never
+  reopen somewhere unreachable.
 - **Escape closes the panel**, and it comes back where you left it.
 
 ### Honest limits

@@ -550,7 +550,6 @@ namespace PipFade
 #     "KeepOnTop": true,
 #     "Locked": false,
 #     "PanelX": -999999, "PanelY": -999999,
-#     "PanelW": 0, "PanelH": 0,
 #     "Geometry": { "brave": { "X":.., "Y":.., "W":.., "H":.. } } }
 function New-DefaultConfig {
     [pscustomobject]@{
@@ -570,10 +569,6 @@ function New-DefaultConfig {
         # one, which legitimately has negative coordinates.
         PanelX           = -999999
         PanelY           = -999999
-        # The size it was left at. 0 means "never resized", which restores the
-        # default rather than a zero-width window.
-        PanelW           = 0
-        PanelH           = 0
         HideMode         = 'toggle'
         Hotkeys          = New-DefaultHotkeys
         Presets          = New-DefaultPresets
@@ -646,7 +641,7 @@ function Get-Config {
     } catch {
         return $cfg
     }
-    foreach ($name in @('Alpha', 'ClickThrough', 'AutoApply', 'RememberGeometry', 'HoverControls', 'KeepOnTop', 'Locked', 'PanelX', 'PanelY', 'PanelW', 'PanelH')) {
+    foreach ($name in @('Alpha', 'ClickThrough', 'AutoApply', 'RememberGeometry', 'HoverControls', 'KeepOnTop', 'Locked', 'PanelX', 'PanelY')) {
         if ($null -ne $raw.PSObject.Properties[$name]) { $cfg.$name = $raw.$name }
     }
     if ($raw.PSObject.Properties['HideMode'] -and $raw.HideMode) {
@@ -922,6 +917,222 @@ namespace PipFadeUI
         public static readonly Font ReadBig = new Font("Segoe UI Semibold", 15f);
         public static readonly Font ReadSmall = new Font("Segoe UI", 8.5f);
         public static readonly Font ReadSign = new Font("Segoe UI", 9f);
+        public static readonly Font Tip = new Font("Segoe UI", 8.75f);
+    }
+
+    // The notification-area menu is drawn by Windows with light chrome unless it
+    // is told otherwise: a bright white dropdown hanging off a near-black tray
+    // icon is the one place the app's own palette visibly stops. A renderer
+    // paints every part the platform normally delegates, so the menu reads as
+    // part of the same window rather than as a system dialog that turned up.
+    public class DarkMenu : ToolStripProfessionalRenderer
+    {
+        public DarkMenu() : base(new DarkColours()) { RoundedEdges = false; }
+
+        protected override void OnRenderToolStripBackground(ToolStripRenderEventArgs e)
+        {
+            using (SolidBrush b = new SolidBrush(Palette.Surface)) e.Graphics.FillRectangle(b, e.AffectedBounds);
+        }
+
+        // A 1px edge all the way round, the same line colour the panel uses for
+        // its boxes. Without it the menu floats with no edge at all against a
+        // dark desktop.
+        protected override void OnRenderToolStripBorder(ToolStripRenderEventArgs e)
+        {
+            Rectangle r = new Rectangle(0, 0, e.ToolStrip.Width - 1, e.ToolStrip.Height - 1);
+            using (Pen p = new Pen(Palette.Line)) e.Graphics.DrawRectangle(p, r);
+        }
+
+        protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e)
+        {
+            bool hot = e.Item.Selected && e.Item.Enabled;
+            if (!hot) return;
+            Rectangle r = new Rectangle(3, 1, e.Item.Width - 6, e.Item.Height - 3);
+            using (GraphicsPath p = Draw.Round(r, 5))
+            {
+                using (SolidBrush b = new SolidBrush(Palette.Track)) e.Graphics.FillPath(b, p);
+            }
+        }
+
+        protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
+        {
+            e.TextColor = e.Item.Enabled ? Palette.Text : Palette.Hint;
+            e.TextFont = Fonts.Tip;
+            base.OnRenderItemText(e);
+        }
+
+        protected override void OnRenderSeparator(ToolStripSeparatorRenderEventArgs e)
+        {
+            int y = e.Item.Height / 2;
+            using (Pen p = new Pen(Palette.Line))
+                e.Graphics.DrawLine(p, 10, y, e.Item.Width - 10, y);
+        }
+
+        protected override void OnRenderImageMargin(ToolStripRenderEventArgs e)
+        {
+            // Nothing to draw: none of these items carries an image, and the
+            // default light gutter is the widest thing the platform adds.
+        }
+    }
+
+    // The professional renderer's colour table still gets consulted for a few
+    // parts this subclass does not override (arrow areas, check backgrounds), so
+    // it has to be dark too or those corners come back white.
+    public class DarkColours : ProfessionalColorTable
+    {
+        public override Color ToolStripDropDownBackground { get { return Palette.Surface; } }
+        public override Color MenuBorder { get { return Palette.Line; } }
+        public override Color MenuItemBorder { get { return Palette.Track; } }
+        public override Color MenuItemSelected { get { return Palette.Track; } }
+        public override Color MenuItemSelectedGradientBegin { get { return Palette.Track; } }
+        public override Color MenuItemSelectedGradientEnd { get { return Palette.Track; } }
+        public override Color ImageMarginGradientBegin { get { return Palette.Surface; } }
+        public override Color ImageMarginGradientMiddle { get { return Palette.Surface; } }
+        public override Color ImageMarginGradientEnd { get { return Palette.Surface; } }
+        public override Color SeparatorDark { get { return Palette.Line; } }
+        public override Color SeparatorLight { get { return Palette.Line; } }
+    }
+
+    // A one-line label shown over a field whose text does not fit. The panel is a
+    // fixed size, so a long binding or a long preset name is clipped by design;
+    // hovering is how the rest of it is read. It is its own top-most window
+    // rather than a ToolTip because a ToolTip is drawn by the system in the light
+    // system theme, and this window can be matched to the panel exactly.
+    public class TipWindow : Form
+    {
+        public TipWindow()
+        {
+            FormBorderStyle = FormBorderStyle.None;
+            ShowInTaskbar = false;
+            StartPosition = FormStartPosition.Manual;
+            BackColor = Palette.Surface;
+            TopMost = true;
+        }
+
+        protected override bool ShowWithoutActivation { get { return true; } }
+
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                CreateParams cp = base.CreateParams;
+                cp.ExStyle |= 0x08000000;   // WS_EX_NOACTIVATE
+                return cp;
+            }
+        }
+
+        // Shows text just above a screen rectangle, nudged back on screen when
+        // the field sits near an edge. Drawn rather than composed from a Label so
+        // the padding and the rim are the panel's own numbers.
+        public void ShowFor(string text, Rectangle anchor)
+        {
+            if (string.IsNullOrEmpty(text)) return;
+            Size need;
+            using (Graphics g = CreateGraphics())
+            {
+                SizeF s = g.MeasureString(text, Fonts.Tip);
+                need = new Size((int)Math.Ceiling(s.Width) + 18, (int)Math.Ceiling(s.Height) + 10);
+            }
+            ClientSize = need;
+            Rectangle v = Screen.FromRectangle(anchor).WorkingArea;
+            int x = anchor.Left;
+            int y = anchor.Top - need.Height - 6;
+            if (y < v.Top) y = anchor.Bottom + 6;
+            if (x + need.Width > v.Right) x = v.Right - need.Width;
+            if (x < v.Left) x = v.Left;
+            Location = new Point(x, y);
+            Text = text;
+            if (!Visible) Show();
+            Invalidate();
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+            g.Clear(Palette.Surface);
+            using (SolidBrush b = new SolidBrush(Palette.Text))
+                g.DrawString(Text, Fonts.Tip, b, 9, 5);
+            using (Pen p = new Pen(Palette.Line))
+                g.DrawRectangle(p, 0, 0, Width - 1, Height - 1);
+        }
+    }
+
+    // One shared tip window and one shared timer for the whole panel. A timer per
+    // field would be twenty-five timers ticking for nothing while the window is
+    // open, and only one field can be hovered at a time anyway.
+    public static class Tips
+    {
+        static TipWindow _win;
+        static Timer _timer;
+        static Control _ctl;
+        static Func<string> _text;
+
+        public static bool IsOpen { get { return _win != null && _win.Visible; } }
+
+        // Waits before showing. Half a second is long enough that sweeping the
+        // pointer across the panel on the way somewhere else never flashes a
+        // label, and short enough that stopping on a clipped one feels answered.
+        public static void Arm(Control c, Func<string> text)
+        {
+            if (c == null || text == null) return;
+            _ctl = c;
+            _text = text;
+            if (_timer == null)
+            {
+                _timer = new Timer();
+                _timer.Interval = 520;
+                _timer.Tick += delegate { Fire(); };
+            }
+            _timer.Stop();
+            _timer.Start();
+        }
+
+        public static void Disarm(Control c)
+        {
+            // Only the control that armed it can disarm it: moving off a text box
+            // onto the panel it sits in fires leave then enter, and the second
+            // event has already armed the same field again by then.
+            if (_ctl != c) return;
+            _timer.Stop();
+            _ctl = null;
+            _text = null;
+            Hide();
+        }
+
+        public static void Hide()
+        {
+            if (_win != null && _win.Visible) _win.Hide();
+        }
+
+        public static void Close()
+        {
+            if (_timer != null) { _timer.Stop(); _timer.Dispose(); _timer = null; }
+            if (_win != null) { _win.Dispose(); _win = null; }
+            _ctl = null;
+            _text = null;
+        }
+
+        static void Fire()
+        {
+            _timer.Stop();
+            Control c = _ctl;
+            if (c == null || !c.Visible || c.IsDisposed) return;
+            // The pointer may have left while the timer ran; the leave handler
+            // covers the ordinary case, this covers a leave the control never saw.
+            Rectangle box = c.RectangleToScreen(c.ClientRectangle);
+            if (!box.Contains(Cursor.Position)) return;
+
+            string t = _text == null ? "" : _text();
+            Font f = c.Font;
+            Field fd = c as Field;
+            if (fd != null && fd.Box != null) f = fd.Box.Font;
+            if (string.IsNullOrEmpty(t)) return;
+            if (TextRenderer.MeasureText(t, f).Width <= c.ClientSize.Width) return;
+
+            if (_win == null) _win = new TipWindow();
+            _win.ShowFor(t, box);
+        }
     }
 
     // Rounds the borderless windows with the compositor rather than clipping them
@@ -2125,6 +2336,25 @@ namespace PipFadeUI
                 if (Recordable && !Recording) BeginRecord();
             };
             Controls.Add(Box);
+
+            // A field is one of the few things in this window that can be wider
+            // than the space it is given, and the panel no longer resizes, so a
+            // long binding or preset name is simply clipped. Hovering is how the
+            // rest of it is read. Both the box and the panel around it arm the
+            // same tip, because the pointer can be over either.
+            Box.MouseEnter += delegate { ArmTip(); };
+            Box.MouseLeave += delegate { Tips.Disarm(this); };
+            MouseEnter += delegate { ArmTip(); };
+            MouseLeave += delegate { Tips.Disarm(this); };
+            Box.TextChanged += delegate { if (Tips.IsOpen) Tips.Hide(); };
+        }
+
+        void ArmTip()
+        {
+            // Not while a capture is running: the box is showing an instruction
+            // rather than a binding, and there is nothing clipped to explain.
+            if (Recording || Box == null) return;
+            Tips.Arm(this, delegate { return Box.Text; });
         }
 
         public string Text2 { get { return Box.Text; } set { Box.Text = value; } }
@@ -2699,25 +2929,13 @@ namespace PipFadeUI
         // Set when the compositor is drawing the rim: the fallback stroke in
         // OnPaint must stay off in that case or two curves land on one corner.
         bool _dwmEdge;
-        // LayoutAll is called from the constructor and from every resize; this
-        // stops those two from re-entering each other.
-        bool _laying;
         GlyphButton _minimise, _close;
-        Label _name, _hint;
+        Label _name;
         LinkLabel _reset, _quit;
         Panel _divider;
         List<Label> _keyLabels;
         Label[] _presetHeads;
         Label _presetNote;
-
-        // Resizing is faked rather than framed: a real title bar and border would
-        // put Windows' own chrome around a window whose whole point is a
-        // monochrome rim, and it would fight the compositor rounding. Nothing is
-        // lost, because Windows does the resizing itself once NCHITTEST names an
-        // edge - the drag, the cursor and the snapping are all the system's own.
-        const int GripBand = 7;
-        const int HitLeft = 10, HitRight = 11, HitTop = 12, HitTopLeft = 13,
-                  HitTopRight = 14, HitBottom = 15, HitBottomLeft = 16, HitBottomRight = 17;
 
         public PanelForm()
         {
@@ -2725,11 +2943,13 @@ namespace PipFadeUI
             StartPosition = FormStartPosition.Manual;
             ShowInTaskbar = true;
             Text = "pipfade";
+            // One size, and it cannot be dragged. The window holds a fixed set of
+            // rows and a tab strip; letting it stretch only moved the frames
+            // further apart. A field that ends up clipped says the rest of itself
+            // on hover instead (see Tips).
             ClientSize = new Size(360, 470);
-            // The smallest size that still holds the tab strip, the slider rail
-            // and eight switches without crowding. This is also the default, so
-            // nothing changes for anyone who leaves the size alone.
             MinimumSize = new Size(360, 470);
+            MaximumSize = new Size(360, 470);
             BackColor = Palette.Bg;
             DoubleBuffered = true;
             // A multi-size icon: one bitmap squashed to 16px for the taskbar
@@ -2818,15 +3038,6 @@ namespace PipFadeUI
             Controls.Add(quit);
             _quit = quit;
 
-            Label hint = new Label();
-            hint.Text = "Ctrl+Alt up/down opacity  \u00B7  Ctrl+Alt+X hide\nCtrl+Alt+A panel  \u00B7  Ctrl+Alt+Q quit";
-            hint.Font = new Font("Segoe UI", 7.75f);
-            hint.ForeColor = Palette.Hint;
-            hint.AutoSize = false;
-            hint.BackColor = Color.Transparent;
-            Controls.Add(hint);
-            _hint = hint;
-
             // A settings window opened with a keyboard shortcut should close with
             // one. Ctrl+Alt+A twice is two chords; Escape is the gesture everyone
             // already tries on a panel with no title bar.
@@ -2864,25 +3075,20 @@ namespace PipFadeUI
             return p;
         }
 
-        // Every child is placed from the current client size rather than from a
-        // list of absolute points, so a resize is one call instead of a pile of
-        // arithmetic in a dozen handlers. The vertical anchors are read from the
-        // bottom: the hint sits 10px off the lower edge, the divider 68px up, and
-        // the pages take whatever is left between the tab strip and the divider.
-        // Changing the height therefore grows the page, not the margins.
+        // Every child is placed from the client size rather than from a list of
+        // absolute points, so the whole window is one function rather than a pile
+        // of arithmetic scattered through a dozen handlers. The size is fixed, so
+        // this runs once - but it still reads the client size instead of
+        // hardcoding points, because that is what keeps the numbers in one place.
         void LayoutAll()
         {
-            if (_laying || Tabs == null) return;
-            _laying = true;
-            try
+            if (Tabs == null) return;
             {
                 int w = ClientSize.Width, h = ClientSize.Height;
-                // The content column grows with the window up to 520px and then
-                // centres. It used to stop at 360, which meant widening the
-                // window to read a long hotkey moved the frames further apart
-                // and changed nothing inside them - the one thing a wider
-                // window is for. Rows that really do read badly when stretched
-                // (a switch and its name) get their own narrower cap below.
+                // The content column is the window minus a 18px margin each side,
+                // capped at 520px and centred. Rows that read badly when
+                // stretched (a switch and its name) get their own narrower cap
+                // below.
                 int inner = Math.Min(520, Math.Max(120, w - 36));
                 int left = (w - inner) / 2;
 
@@ -2901,16 +3107,17 @@ namespace PipFadeUI
 
                 Tabs.Bounds = new Rectangle(left, 42, inner, 26);
 
-                int dividerY = h - 68;
-                int rowY = h - 58;
-                int hintY = h - 36;
+                // The footer used to leave a third of its space to a hotkey cheat
+                // sheet; without it the divider and the two links sit closer to
+                // the bottom edge and the tab area takes the difference.
+                int dividerY = h - 46;
+                int rowY = h - 36;
                 int pageY = 76;
                 int pageH = Math.Max(120, dividerY - 6 - pageY);
 
                 if (_divider != null) _divider.Bounds = new Rectangle(left, dividerY, inner, 1);
                 if (_reset != null) _reset.Location = new Point(left, rowY);
                 if (_quit != null) _quit.Bounds = new Rectangle(left + inner - 102, rowY, 102, 18);
-                if (_hint != null) _hint.Bounds = new Rectangle(left, hintY, inner, 26);
 
                 Rectangle pr = new Rectangle(2, 0, Math.Max(40, w - 6), pageH);
                 Panel[] pages = new Panel[] { PageControls, PageKeys, PagePresets };
@@ -2918,9 +3125,6 @@ namespace PipFadeUI
                 {
                     if (p == null) continue;
                     p.Bounds = new Rectangle(0, pageY, w, pageH);
-                    // A Region is an unmanaged GDI object: a resize hands out a
-                    // fresh one every time, so the old one has to go or dragging
-                    // an edge for a minute leaks a thousand of them.
                     Region old = p.Region;
                     p.Region = new Region(pr);
                     if (old != null) old.Dispose();
@@ -2930,23 +3134,21 @@ namespace PipFadeUI
                 LayoutKeysPage(left, inner, pageH);
                 LayoutPresetsPage(left, w, inner, pageH);
             }
-            finally { _laying = false; }
         }
 
         void LayoutControlsPage(int left, int inner, int pageH)
         {
             if (Slider == null) return;
-            // The switch rows keep their own narrower cap and centre inside the
-            // column: a switch stretched to 520px floats a hand's width away
-            // from the words it belongs to, which reads as two unrelated lists
-            // rather than one setting.
-            int rowW = Math.Min(360, inner);
+            // The switch rows keep a cap of their own inside the column. It never
+            // bites at 360, but the row is what decides how far a switch sits
+            // from the words it belongs to, and that is a reading-width question
+            // rather than a window-width one.
+            int rowW = Math.Min(340, inner);
             int rowX = left + (inner - rowW) / 2;
             Slider.Bounds = new Rectangle(rowX, 4, rowW, 58);
 
-            // Eight rows sharing the space under the slider. The pitch opens up
-            // as the window grows, but only so far: past 38px the switches drift
-            // apart and stop reading as one group.
+            // Eight rows sharing the space under the slider, spaced from the page
+            // height so the group fills the tab rather than crowding its top.
             int room = pageH - 78;
             int pitch = Math.Max(31, Math.Min(38, room / 8));
             Switch[] list = new Switch[] { ClickSwitch, GeometrySwitch, LockSwitch, AutoSwitch,
@@ -2963,9 +3165,9 @@ namespace PipFadeUI
         // The pixels the name column and the binding column each want, measured
         // once from the fonts. The longest binding this app can produce is four
         // modifiers and a key name, so the field is sized from that rather than
-        // from a guess about how wide "Shift" is. Cached because a resize
-        // gesture lays out on every pixel of the drag, and thirteen MeasureString
-        // calls per pixel is work done for a number that cannot change.
+        // from a guess about how wide "Shift" is. Measured once and kept: the
+        // panel has a single size, so these numbers are a property of the build
+        // rather than of the window.
         int _keyLabelNeed;
         int _keyTextNeed;
 
@@ -3032,20 +3234,18 @@ namespace PipFadeUI
         void LayoutPresetsPage(int left, int w, int inner, int pageH)
         {
             if (PresetNames == null) return;
-            // Three columns, and the same rule as the Keys tab: the buttons are
-            // a fixed width because they are glyphs, the binding box takes what
-            // it needs up to the width of the longest binding, and the name
-            // takes the rest. So a wide window reveals a long shortcut here too,
-            // while the minimum width still shows an ordinary one in full.
+            // Three columns: fixed-width buttons because they are glyphs, a
+            // binding box that gets what it asks for, and a name box with the
+            // rest. The name has a floor of its own - a preset called "Reading"
+            // needs somewhere to be read - so on a narrow window it is the
+            // binding that gives way, and the hover tip says the rest of a long
+            // combination. A shortcut is a fixed string that cannot be
+            // shortened, but it is also the thing you only need to check once.
             KeyColumnNeeds();
-            // Three columns. The buttons are fixed width because they are
-            // glyphs; the binding box takes what it needs before the name does,
-            // because a shortcut is a fixed string that cannot be shortened,
-            // while a name is something you type. The minimum window width is
-            // set from this worst case, so no preset shortcut ever clips.
-            int btnW = 74;   // three 22px buttons with 4px between them
+            int btnW = 74;      // three 22px buttons with 4px between them
+            int nameMin = 90;   // below this a name box shows an ellipsis and little else
             int avail = inner - btnW - 12;
-            int keyW = Math.Max(120, Math.Min(_keyTextNeed + 20, avail - 64));
+            int keyW = Math.Max(126, Math.Min(_keyTextNeed + 22, avail - nameMin));
             int nameW = avail - keyW;
             int keyX = left + nameW + 6;
             int applyX = keyX + keyW + 6;
@@ -3088,9 +3288,9 @@ namespace PipFadeUI
 
         void BuildControlsPage()
         {
-            // Eight switches have to share the page with the slider, so the list
-            // is pitched at 31 rather than 32 and the slider gives up six pixels
-            // it was not using.
+            // The slider and the eight switches are placed for real in
+            // LayoutControlsPage; the bounds here only stop the controls
+            // painting once at their default corner before that runs.
             Slider = new OpacitySlider();
             Slider.Bounds = new Rectangle(18, 4, 280, 58);
             Slider.BackColor = Palette.Bg;
@@ -3300,17 +3500,13 @@ namespace PipFadeUI
             _dwmEdge = Corners.Frame(this, 12, Palette.Line);
         }
 
-        void Divider(int y)
-        {
-            Panel line = new Panel();
-            line.BackColor = Palette.Line;
-            line.Bounds = new Rectangle(18, y, 280, 1);
-            Controls.Add(line);
-        }
-
         void RequestClose()
         {
             _closing = true;
+            // The tip is its own window and does not follow this one into hiding;
+            // without this it stays over the desktop pointing at a panel that is
+            // no longer there.
+            Tips.Close();
             Hide();
         }
 
@@ -3393,62 +3589,8 @@ namespace PipFadeUI
         // assigns these directly rather than adding a handler.
         public Action Placed;
 
-        // Raised once when a resize gesture finishes, not per pixel: Windows sends
-        // Resize continuously while the edge is dragged.
-        public Action Resized;
-        bool _wasSizing;
-
-        protected override void OnResize(EventArgs e)
-        {
-            base.OnResize(e);
-            LayoutAll();
-            if (WindowState == FormWindowState.Normal) _wasSizing = true;
-        }
-
-        protected override void OnResizeEnd(EventArgs e)
-        {
-            base.OnResizeEnd(e);
-            if (!_wasSizing) return;
-            _wasSizing = false;
-            LayoutAll();
-            if (Resized != null) Resized();
-        }
-
-        // The window has no border to grab, so the edges are claimed by
-        // hit-testing instead. Returning one of the HT* edges hands the whole
-        // drag to Windows: the resize, the cursor and the snapping are the
-        // system's own, so this is a real resizable window that only happens to
-        // have no chrome drawn around it.
         protected override void WndProc(ref Message m)
         {
-            if (m.Msg == 0x0084 && WindowState == FormWindowState.Normal)
-            {
-                base.WndProc(ref m);
-                // Only take over where nothing else wants the point: buttons and
-                // text boxes still get their own hit-test first.
-                if ((int)m.Result == 1)
-                {
-                    Point p = PointToClient(new Point(m.LParam.ToInt32()));
-                    int w = ClientSize.Width, h = ClientSize.Height;
-                    bool left = p.X < GripBand;
-                    bool right = p.X >= w - GripBand;
-                    bool top = p.Y < GripBand;
-                    bool bottom = p.Y >= h - GripBand;
-
-                    int hit = 0;
-                    if (top && left) hit = HitTopLeft;
-                    else if (top && right) hit = HitTopRight;
-                    else if (bottom && left) hit = HitBottomLeft;
-                    else if (bottom && right) hit = HitBottomRight;
-                    else if (left) hit = HitLeft;
-                    else if (right) hit = HitRight;
-                    else if (top) hit = HitTop;
-                    else if (bottom) hit = HitBottom;
-
-                    if (hit != 0) m.Result = (IntPtr)hit;
-                }
-                return;
-            }
             WndProcKey(ref m);
         }
 
@@ -3784,18 +3926,14 @@ function Reset-Everything {
     $script:Config.Alpha = 255
     $script:Config.ClickThrough = $false
     $script:Config.Geometry = @{}
-    # The link promises to reset the panel's size and position too, so the
-    # sentinel goes back in and the window is put in the middle at its default
-    # size while the file is written.
+    # The link promises to reset the panel's position too, so the sentinel goes
+    # back in and the window is put in the middle while the file is written.
     $script:Config.PanelX = -999999
     $script:Config.PanelY = -999999
-    $script:Config.PanelW = 0
-    $script:Config.PanelH = 0
     if ($script:Panel) {
-        $script:Panel.ClientSize = [System.Drawing.Size]::new(360, 470)
         $v = [System.Windows.Forms.SystemInformation]::VirtualScreen
         $script:Panel.Location = [System.Drawing.Point]::new(
-            [int]($v.Left + ($v.Width - 324) / 2), [int]($v.Top + ($v.Height - 470) / 2))
+            [int]($v.Left + ($v.Width - 360) / 2), [int]($v.Top + ($v.Height - 470) / 2))
     }
     Save-Config $script:Config
     $script:Applied = @{}
@@ -4391,7 +4529,17 @@ function New-TrayIcon {
     $ni.Icon = [PipFadeUI.Mark]::AppIcon([PipFadeUI.Mark]::ShellFore([PipFadeUI.Palette]::Accent))
     $ni.Text = 'pipfade'
     $ni.Visible = $true
+    # The menu is drawn by the panel's own renderer: a system menu would arrive in
+    # the light theme, which on a dark taskbar looks like a scrap of another
+    # program. DarkMenu does the background, the hover plate, the separators and
+    # the text colour; DarkColours feeds the professional renderer the few parts
+    # it reads from a colour table instead of drawing itself.
     $menu = New-Object System.Windows.Forms.ContextMenuStrip
+    $menu.Renderer = New-Object PipFadeUI.DarkMenu
+    $menu.BackColor = [PipFadeUI.Palette]::Surface
+    $menu.ForeColor = [PipFadeUI.Palette]::Text
+    $menu.ShowImageMargin = $false
+    $menu.Font = [System.Drawing.Font]::new('Segoe UI', 8.75)
     $miShow = $menu.Items.Add('Open panel')
     $miShow.add_Click({ Show-Panel })
     $miSolid = $menu.Items.Add('Solid again')
@@ -4499,36 +4647,11 @@ function Show-Panel {
             Request-Save
         }
 
-        # Once per resize gesture, not once per pixel: Windows sends Resize
-        # continuously while an edge is dragged. The client size, not the window
-        # size: this window has no border style, but Windows still reserves a
-        # few pixels of resize frame, so storing the outer height and restoring
-        # it as a client height made the window grow on every launch.
-        $panel.Resized = {
-            $script:Config.PanelW = $script:Panel.ClientSize.Width
-            $script:Config.PanelH = $script:Panel.ClientSize.Height
-            Request-Save
-        }
-
-        # The size it was last left at, before the position is worked out: the
-        # centring below measures the window it is centring. 0 means never
-        # resized, and anything under the minimum is clamped rather than trusted,
-        # so a hand-edited file cannot produce a window with no room in it. The
-        # ceiling matters as much as the floor: a window remembered at 1120 wide
-        # from a bigger monitor would open with its right edge past the screen.
-        $v = [System.Windows.Forms.SystemInformation]::VirtualScreen
-        if ([int]$script:Config.PanelW -ge 360 -and [int]$script:Config.PanelH -ge 470) {
-            $cw = [Math]::Min([int]$script:Config.PanelW, $v.Width - 60)
-            $ch = [Math]::Min([int]$script:Config.PanelH, $v.Height - 60)
-            if ($cw -ge 360 -and $ch -ge 470) {
-                $panel.ClientSize = [System.Drawing.Size]::new($cw, $ch)
-            }
-        }
-
         # Open where it was last left; fall back to the middle of the screen when
         # there is no remembered spot, or when that spot is on a monitor that is
         # no longer attached. A panel restored onto a disconnected screen would
         # be invisible, which is worse than losing the position.
+        $v = [System.Windows.Forms.SystemInformation]::VirtualScreen
         $panelX = [int]($v.Left + ($v.Width - $panel.Width) / 2)
         $panelY = [int]($v.Top + ($v.Height - $panel.Height) / 2)
         if ($null -ne $script:Config.PanelX -and [int]$script:Config.PanelX -ne -999999) {
@@ -4538,24 +4661,10 @@ function Show-Panel {
                         $py -lt ($v.Bottom - 40) -and ($py + $panel.Height) -gt ($v.Top + 40)
             if ($onScreen) { $panelX = $px; $panelY = $py }
         }
-        # ...and then pulled far enough back that a strip of it is always
-        # reachable. Without this a window saved at the very edge of a wider
-        # monitor has its grab band out of reach, so it can neither be moved nor
-        # resized back. A window narrow enough to fit is kept wholly on screen
-        # instead: leaving a third of it past the edge is legal but useless, and
-        # that is what happened to a size saved while dragged to the right.
-        if ($panel.Width -le $v.Width) {
-            $panelX = [Math]::Max($v.Left, [Math]::Min($panelX, $v.Right - $panel.Width))
-        } else {
-            $panelX = [Math]::Max($v.Left - $panel.Width + 140,
-                       [Math]::Min($panelX, $v.Right - 140))
-        }
-        if ($panel.Height -le $v.Height) {
-            $panelY = [Math]::Max($v.Top, [Math]::Min($panelY, $v.Bottom - $panel.Height))
-        } else {
-            $panelY = [Math]::Max($v.Top,
-                       [Math]::Min($panelY, $v.Bottom - 80))
-        }
+        # ...and then kept wholly on screen: the size cannot change, so a window
+        # narrower than the screen should never be left with an edge past it.
+        $panelX = [Math]::Max($v.Left, [Math]::Min($panelX, $v.Right - $panel.Width))
+        $panelY = [Math]::Max($v.Top, [Math]::Min($panelY, $v.Bottom - $panel.Height))
         # A Point built with ::new rather than New-Object: a negative coordinate
         # in an -ArgumentList reads like a parameter name and is silently lost.
         $panel.Location = [System.Drawing.Point]::new($panelX, $panelY)

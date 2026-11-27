@@ -27,7 +27,7 @@ light source. Emphasis comes from brightness and weight only.
 | `Text` | `#F5F5F6` | Primary labels, values |
 | `Muted` | `#ABABAF` | Secondary text, preset summaries |
 | `Accent` | `#F0F0F2` | Switch on, knob, active tab underline |
-| `Hint` | `#8E8E93` | Footer hint line, units |
+| `Hint` | `#8E8E93` | Secondary text, units, disabled menu items |
 
 Light taskbar / light theme inverse: `#FAFAFA` background, `#0D0D0F` text,
 `#6B6B70` secondary, `rgba(0,0,0,.12)` lines.
@@ -49,11 +49,13 @@ inherits it at every size.
 
 - Corner radius 12 on the panel (matching DWM's own rounding), 8 on wells, 3 on
   the slider knob.
-- Panel is 360×470 at minimum, freely resizable from any edge or corner; the
-  hover bar is 240–386 wide and 30 tall, always 12px inside the player's top
-  edge. The content column is measured: the Controls tab keeps a 360px reading
-  width in the middle of a wide window, while the Hotkeys and Presets tabs spend
-  the extra width on the binding boxes so a long combination reads in full.
+- Panel is 360×470, fixed: one size holds every row and a tab strip, so there
+  are no drag edges to find and no size to remember. A field that still clips
+  says the rest of itself in a dark tip after half a second of hover.
+- The hover bar is 240–386 wide and 30 tall, always 12px inside the player's top
+  edge. Inside the panel the content column is 324px wide, and both the Keys and
+  Presets tabs split it between a measured label/name column and a binding box
+  wide enough for a four-modifier combination.
 - 18px page margin, 8px vertical rhythm between switch rows (28px rows).
 - One-pixel strokes, never two: a doubled edge reads as a seam.
 
