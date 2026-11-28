@@ -68,6 +68,11 @@ inherits it at every size.
   still pointer costs nothing and an arriving one is seen within 25ms.
 - 18px page margin, 8px vertical rhythm between switch rows (28px rows).
 - One-pixel strokes, never two: a doubled edge reads as a seam.
+- The update row is 324×28, the full column, sitting in the 10px gap above the
+  footer divider. It is the only element in the panel that appears after the
+  window is already open, so its arrival shortens the page and re-spaces the rows
+  above it rather than floating over them. When there is no news the row is not
+  there and neither is the space: a reserved empty strip would be furniture.
 
 ## Motion
 

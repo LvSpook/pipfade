@@ -3,6 +3,34 @@
 All notable changes to pipfade are recorded here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## What's New in v1.2.0
+
+A size that remembers what the video looks like, and a quiet word when there is
+a newer version.
+
+### Size and position
+
+- **A remembered size no longer forces an old shape onto a new video.** The
+  window belongs to the browser, and the browser shapes it to the video it is
+  showing, so a rect saved from a wide video applied to a tall one left black
+  bars down the sides. Position is still restored every time; the size is only
+  applied when the shapes agree to within 2%, and otherwise the player keeps its
+  own proportions and is centred on the spot you left it.
+- **A restored window cannot land off the screen.** Centring a window that grew
+  past the edge the old one sat against could hang it a hundred pixels outside
+  the desktop, so the result is pulled back inside the virtual screen.
+
+### The update notice
+
+- **A row at the bottom of the panel says when there is a newer version**, with a
+  Download link that opens the release page — the notes first, then the archive.
+  The row only exists when there is news; when you are current it is not there at
+  all, and neither is the space it would have taken.
+- **One check per launch, and nothing else.** A single read-only request for the
+  latest release tag, off the main thread, with an eight-second timeout. Nothing
+  is downloaded, nothing is installed, and a failure — offline, GitHub down, rate
+  limited — says nothing at all. The app makes no other network request.
+
 ## What's New in v1.1.0
 
 The bar became pressable, the panel stopped moving, and leaving the app running

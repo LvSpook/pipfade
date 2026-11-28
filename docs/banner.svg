@@ -24,14 +24,23 @@
     <filter id="soft" x="-60%" y="-60%" width="220%" height="220%">
       <feGaussianBlur stdDeviation="7"/>
     </filter>
+    <!-- Everything is clipped to the same rounded rectangle the border draws.
+         Without this the square background fill ran out past the corner arc,
+         which left four sharp points on an otherwise rounded picture at any
+         size smaller than the one the numbers were picked at. -->
+    <clipPath id="card">
+      <rect x="0" y="0" width="1200" height="320" rx="19" ry="19"/>
+    </clipPath>
   </defs>
 
-  <rect width="1200" height="320" fill="url(#bg)"/>
-  <rect width="1200" height="320" fill="url(#glow)"/>
+  <g clip-path="url(#card)">
+    <rect width="1200" height="320" fill="url(#bg)"/>
+    <rect width="1200" height="320" fill="url(#glow)"/>
 
-  <!-- three hairlines: a hint of a screen, nothing that competes -->
-  <g stroke="#ffffff" stroke-opacity="0.02" stroke-width="1">
-    <path d="M0 80h1200M0 160h1200M0 240h1200"/>
+    <!-- three hairlines: a hint of a screen, nothing that competes -->
+    <g stroke="#ffffff" stroke-opacity="0.02" stroke-width="1">
+      <path d="M0 80h1200M0 160h1200M0 240h1200"/>
+    </g>
   </g>
 
   <g transform="translate(199 101)">

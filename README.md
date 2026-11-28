@@ -47,7 +47,7 @@ remember exactly how you left it.
 
 **Layout**
 
-- Each player remembers its size and position
+- Each player remembers its position, and its size when the video is the same shape
 - Lock the frame so a stray drag cannot undo an arrangement
 - Works with two players at once, each with its own layout
 - Panel opens where you left it, always the same size
@@ -71,6 +71,7 @@ remember exactly how you left it.
 - Tray icon with a dark menu that matches the panel
 - Starts with Windows, no console flash
 - Costs nothing to leave running: under 0.7% of one core, and most seconds at zero
+- Tells you when there is a newer version, with a link to the release notes
 
 </td>
 </tr>

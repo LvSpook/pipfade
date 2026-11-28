@@ -646,6 +646,13 @@ namespace PipFade
 }
 
 
+# ------------------------------------------------------------------- version
+# The one number that has to agree with the git tag. It is only used to answer
+# "is there a newer one than this": nothing else in the app reads it.
+$script:Version = '1.2.0'
+
+$script:LatestVersion = $null
+
 # ------------------------------------------------------------------- settings
 # Shape:
 #   { "Alpha": 255, "ClickThrough": false,
@@ -915,6 +922,47 @@ function Save-Geometry($cfg, [string]$proc, $rect) {
     }
 }
 
+# A remembered size is only worth restoring while it is still the right shape.
+# The window belongs to the browser, and the browser shapes it to the video it
+# is showing: a rect saved from a wide video, applied to a tall one, leaves
+# black bars down the sides. So the position is always fair game and the size is
+# applied only when the two shapes agree to within a couple of percent.
+function Get-RestoreRect($pip, $g) {
+    $sameShape = $false
+    if ($pip.W -gt 0 -and $pip.H -gt 0 -and $g.W -gt 0 -and $g.H -gt 0) {
+        $was = $g.W / [double]$g.H
+        $now = $pip.W / [double]$pip.H
+        $sameShape = ([Math]::Abs($was - $now) / $now) -le 0.02
+    }
+    if ($sameShape) {
+        return [pscustomobject]@{ X = [int]$g.X; Y = [int]$g.Y; W = [int]$g.W; H = [int]$g.H }
+    }
+    # Keep the shape the player has now, and centre that shape where the saved
+    # one sat: a video that changed proportions still lands on the spot you
+    # left it rather than half a window away from it.
+    $w = [int]$pip.W; $h = [int]$pip.H
+    $x = [int]($g.X + ($g.W - $w) / 2)
+    $y = [int]($g.Y + ($g.H - $h) / 2)
+    # Centring can push a window that grew past the edge the old one sat against,
+    # so pull it back on screen when it fits there at all. Test-OnScreen would
+    # otherwise accept a window hanging a hundred pixels off the left edge.
+    $v = [System.Windows.Forms.SystemInformation]::VirtualScreen
+    if ($w -le $v.Width) {
+        if ($x -lt $v.Left) { $x = $v.Left }
+        if ($x + $w -gt $v.Right) { $x = $v.Right - $w }
+    }
+    if ($h -le $v.Height) {
+        if ($y -lt $v.Top) { $y = $v.Top }
+        if ($y + $h -gt $v.Bottom) { $y = $v.Bottom - $h }
+    }
+    return [pscustomobject]@{
+        X = $x
+        Y = $y
+        W = $w
+        H = $h
+    }
+}
+
 function Restore-Geometry($cfg, $pip) {
     if (-not $cfg.RememberGeometry) { return $false }
     $key = Get-GeometryKey $pip.Proc
@@ -925,8 +973,12 @@ function Restore-Geometry($cfg, $pip) {
     if ($pip.X -eq $g.X -and $pip.Y -eq $g.Y -and $pip.W -eq $g.W -and $pip.H -eq $g.H) {
         return $false
     }
-    if (-not (Test-OnScreen $g.X $g.Y $g.W $g.H)) { return $false }
-    [PipFade.Finder]::Move($pip.Handle, $g.X, $g.Y, $g.W, $g.H)
+    $r = Get-RestoreRect $pip $g
+    if (-not (Test-OnScreen $r.X $r.Y $r.W $r.H)) { return $false }
+    if ($pip.X -eq $r.X -and $pip.Y -eq $r.Y -and $pip.W -eq $r.W -and $pip.H -eq $r.H) {
+        return $false
+    }
+    [PipFade.Finder]::Move($pip.Handle, $r.X, $r.Y, $r.W, $r.H)
     return $true
 }
 
@@ -1023,6 +1075,7 @@ namespace PipFadeUI
         public static readonly Font ReadSmall = new Font("Segoe UI", 8.5f);
         public static readonly Font ReadSign = new Font("Segoe UI", 9f);
         public static readonly Font Tip = new Font("Segoe UI", 8.75f);
+        public static readonly Font Notice = new Font("Segoe UI Semibold", 8.75f);
     }
 
     // The notification-area menu is drawn by Windows with light chrome unless it
@@ -3104,11 +3157,72 @@ namespace PipFadeUI
         }
     }
 
+    // The update notice is a row rather than a dialog: a modal box that
+    // interrupts what you were already doing just to say a newer version exists
+    // is worse than a line you can ignore. It sits above the footer, names the
+    // version that is out, and opens the release page when clicked - the app
+    // never replaces itself.
+    public class UpdateNotice : Control
+    {
+        public string Version = "";
+        bool _hover;
+
+        public UpdateNotice()
+        {
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint
+                     | ControlStyles.OptimizedDoubleBuffer | ControlStyles.SupportsTransparentBackColor, true);
+            Cursor = Cursors.Hand;
+            BackColor = Color.Transparent;
+        }
+
+        protected override void OnMouseEnter(EventArgs e) { _hover = true; Invalidate(); base.OnMouseEnter(e); }
+        protected override void OnMouseLeave(EventArgs e) { _hover = false; Invalidate(); base.OnMouseLeave(e); }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            Rectangle r = new Rectangle(0, 0, Width - 1, Height - 1);
+            using (GraphicsPath p = Draw.Round(r, 7))
+            {
+                using (SolidBrush b = new SolidBrush(_hover ? Palette.Track : Palette.Surface)) g.FillPath(b, p);
+                using (Pen pen = new Pen(_hover ? Palette.Hint : Palette.Line)) g.DrawPath(pen, p);
+            }
+
+            string label = Version.Length > 0 ? "v" + Version + " is available" : "An update is available";
+            // Measured and placed by hand: TextRenderer's VerticalCenter flag is
+            // ignored when NoPadding is also set, which left the text riding the
+            // top edge with its ascenders cut off.
+            Size ms = TextRenderer.MeasureText(label, Fonts.Notice, new Size(int.MaxValue, int.MaxValue), TextFormatFlags.NoPadding);
+            int ty = (Height - ms.Height) / 2;
+            Rectangle lr = new Rectangle(10, ty, Width - 30, ms.Height);
+            TextRenderer.DrawText(g, label, Fonts.Notice, lr, _hover ? Palette.Text : Palette.Muted,
+                                  TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
+
+            // The link is painted rather than a real LinkLabel: a child window
+            // inside this row would paint a second background over the plate.
+            string link = "Download";
+            Size ls = TextRenderer.MeasureText(link, Fonts.Notice, new Size(int.MaxValue, int.MaxValue), TextFormatFlags.NoPadding);
+            Rectangle dl = new Rectangle(Width - 10 - ls.Width, ty, ls.Width, ms.Height);
+            TextRenderer.DrawText(g, link, Fonts.Notice, dl, _hover ? Palette.Text : Palette.Accent,
+                                  TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
+            if (_hover)
+                using (Pen pen = new Pen(Palette.Text))
+                    g.DrawLine(pen, dl.Left, ty + ms.Height - 1, dl.Right, ty + ms.Height - 1);
+        }
+    }
+
     // ----------------------------------------------------------------- panel
     public class PanelForm : Form
     {
         public OpacitySlider Slider;
         public Switch ClickSwitch, GeometrySwitch, LockSwitch, AutoSwitch, KeepTopSwitch, StartupSwitch, HoverSwitch, HoldSwitch;
+        public UpdateNotice Notice;
+        public Action OpenDownload;
+        // Whether the notice row is occupying layout space. Separate from
+        // Notice.Visible because a child of an unshown form always reports false,
+        // and this decision has to be right before the first Show.
+        bool NoticeActive;
         public Segmented Tabs;
         public Panel PageControls, PageKeys, PagePresets;
         public Dictionary<string, Field> KeyFields;
@@ -3221,6 +3335,14 @@ namespace PipFadeUI
             _divider.BackColor = Palette.Line;
             Controls.Add(_divider);
 
+            // Hidden until something actually knows a newer version exists. An
+            // empty strip that says "up to date" is furniture; one that appears
+            // only when there is news is information.
+            Notice = new UpdateNotice();
+            Notice.Visible = false;
+            Notice.Click += delegate { if (OpenDownload != null) OpenDownload(); };
+            Controls.Add(Notice);
+
             LinkLabel reset = new LinkLabel();
             reset.Text = "reset size, position and opacity";
             reset.Font = new Font("Segoe UI", 8.25f);
@@ -3326,7 +3448,19 @@ namespace PipFadeUI
                 int dividerY = h - 46;
                 int rowY = h - 36;
                 int pageY = 76;
-                int pageH = Math.Max(120, dividerY - 6 - pageY);
+                // The update row borrows its height from the tab area rather
+                // than hovering over it, so a page never has a control sitting
+                // underneath a strip that can appear later.
+                int noticeH = 28;
+                // Not Notice.Visible: a child of a form that has not been shown
+                // yet reports Visible as false no matter what was set on it, and
+                // the announcement can easily arrive before the window does.
+                bool notice = NoticeActive;
+                int pageBottom = dividerY - 6 - (notice ? noticeH + 10 : 0);
+                int pageH = Math.Max(120, pageBottom - pageY);
+
+                if (Notice != null)
+                    Notice.Bounds = new Rectangle(left, dividerY - 6 - noticeH, inner, noticeH);
 
                 if (_divider != null) _divider.Bounds = new Rectangle(left, dividerY, inner, 1);
                 if (_reset != null) _reset.Location = new Point(left, rowY);
@@ -3362,15 +3496,19 @@ namespace PipFadeUI
 
             // Eight rows sharing the space under the slider, spaced from the page
             // height so the group fills the tab rather than crowding its top.
+            // The floor drops when the update row is on screen: that row is real
+            // estate taken from the page, and eight rows at the old minimum
+            // would push the last switch under the strip.
             int room = pageH - 78;
-            int pitch = Math.Max(31, Math.Min(38, room / 8));
+            int pitch = Math.Max(NoticeActive ? 27 : 31, Math.Min(38, room / 8));
             Switch[] list = new Switch[] { ClickSwitch, GeometrySwitch, LockSwitch, AutoSwitch,
                                            KeepTopSwitch, StartupSwitch, HoverSwitch, HoldSwitch };
+            int swH = NoticeActive ? 26 : 28;
             int y = 68;
             foreach (Switch s in list)
             {
                 if (s == null) continue;
-                s.Bounds = new Rectangle(rowX, y, rowW, 28);
+                s.Bounds = new Rectangle(rowX, y, rowW, swH);
                 y += pitch;
             }
         }
@@ -3415,7 +3553,9 @@ namespace PipFadeUI
             if (count == 0) return;
 
             int room = pageH - 8;
-            int pitch = Math.Max(24, Math.Min(30, room / count));
+            // Same floor as the Controls page: the update row shortens the page,
+            // and thirteen bindings have to still fit inside it.
+            int pitch = Math.Max(NoticeActive ? 22 : 24, Math.Min(30, room / count));
 
             KeyColumnNeeds();
             // Two measured columns. When there is room for both, the name takes
@@ -3879,6 +4019,20 @@ namespace PipFadeUI
             Status.ForeColor = warn ? Palette.Warn : Palette.Muted;
         }
 
+        // Announcing a version takes room away from the tab, so the whole layout
+        // is rebuilt rather than the row simply being made visible: otherwise a
+        // page would keep its old height and the last row would sit under the
+        // strip.
+        public void ShowUpdate(string version)
+        {
+            if (InvokeRequired) { BeginInvoke((MethodInvoker)delegate { ShowUpdate(version); }); return; }
+            if (Notice == null || version == null || version.Length == 0) return;
+            Notice.Version = version.TrimStart('v', 'V');
+            Notice.Visible = true;
+            NoticeActive = true;
+            LayoutAll();
+        }
+
         public void SyncControls(int alpha, bool click, bool geo, bool auto, bool keepTop, bool startup, bool hover, bool holdHide, bool locked)
         {
             if (InvokeRequired) { BeginInvoke((MethodInvoker)delegate { SyncControls(alpha, click, geo, auto, keepTop, startup, hover, holdHide, locked); }); return; }
@@ -3973,8 +4127,15 @@ function Apply-ToPlayer($pip, [switch]$Force) {
         if ($cfg.Geometry.ContainsKey($key)) {
             $g = $cfg.Geometry[$key]
             if (-not ($pip.X -eq $g.X -and $pip.Y -eq $g.Y -and $pip.W -eq $g.W -and $pip.H -eq $g.H)) {
-                if (Test-OnScreen $g.X $g.Y $g.W $g.H) {
-                    [PipFade.Finder]::Move($h, $g.X, $g.Y, $g.W, $g.H)
+                # Same rule as Restore-Geometry: position always, size only while
+                # the video still has the proportions it had when the rect was
+                # saved. Forcing an old width and height onto a differently
+                # shaped video is what put black bars around it.
+                $r = Get-RestoreRect $pip $g
+                if (Test-OnScreen $r.X $r.Y $r.W $r.H) {
+                    if (-not ($pip.X -eq $r.X -and $pip.Y -eq $r.Y -and $pip.W -eq $r.W -and $pip.H -eq $r.H)) {
+                        [PipFade.Finder]::Move($h, $r.X, $r.Y, $r.W, $r.H)
+                    }
                 }
             }
         }
@@ -4862,6 +5023,66 @@ function New-TrayIcon {
     return $ni
 }
 
+# ------------------------------------------------------------- update notice
+# Asked once per launch, off the main thread. The app makes no other network
+# request and this one is read-only: it fetches a small JSON document and does
+# nothing with it but compare a number. Nothing is downloaded or installed, and
+# a failure - offline, GitHub down, rate limited - is silent, because a settings
+# window that complains about the internet is a worse neighbour than one that
+# says nothing.
+$script:UpdateTask = $null
+
+function Start-UpdateCheck {
+    try {
+        Add-Type -AssemblyName System.Net.Http -ErrorAction Stop
+        $client = New-Object System.Net.Http.HttpClient
+        $client.Timeout = [TimeSpan]::FromSeconds(8)
+        # GitHub rejects requests without a user agent.
+        $client.DefaultRequestHeaders.Add('User-Agent', 'pipfade')
+        $script:UpdateTask = $client.GetStringAsync('https://api.github.com/repos/LvSpook/pipfade/releases/latest')
+    } catch {
+        # No networking stack, or a locked-down machine: pretend it was asked and
+        # answered nothing.
+        $script:UpdateTask = $null
+    }
+}
+
+function Test-NewerVersion([string]$latest) {
+    if ([string]::IsNullOrWhiteSpace($latest)) { return $false }
+    try {
+        $a = [version]($latest.TrimStart('v', 'V'))
+        $b = [version]$script:Version
+        return ($a -gt $b)
+    } catch { return $false }
+}
+
+# Called every pass. A completed task is checked once and then dropped, so the
+# loop pays a single property read for as long as the request is in flight.
+function Poll-UpdateCheck {
+    if (-not $script:UpdateTask) { return }
+    if (-not $script:UpdateTask.IsCompleted) { return }
+    $task = $script:UpdateTask
+    $script:UpdateTask = $null
+    $tag = $null
+    try {
+        if (-not $task.IsFaulted -and -not $task.IsCanceled) {
+            $json = $task.Result | ConvertFrom-Json
+            if ($json.PSObject.Properties['tag_name']) { $tag = [string]$json.tag_name }
+        }
+    } catch { $tag = $null }
+    if (-not $tag) { return }
+    $script:LatestVersion = $tag.TrimStart('v', 'V')
+    if (-not (Test-NewerVersion $script:LatestVersion)) { return }
+    if ($script:Panel) { $script:Panel.ShowUpdate($script:LatestVersion) }
+}
+
+function Open-Download {
+    # The release page rather than the zip: it is where the notes are, and a
+    # browser download prompt is a decision the user should make with the
+    # changelog in front of them.
+    try { Start-Process 'https://github.com/LvSpook/pipfade/releases/latest' } catch { }
+}
+
 # ------------------------------------------------------------- panel wiring
 function Show-Panel {
     if (-not $script:Panel) {
@@ -4869,6 +5090,7 @@ function Show-Panel {
         $panel = New-Object PipFadeUI.PanelForm
         $script:Panel = $panel          # assign before wiring: events read this
         $panel.ResetRequested = { Reset-Everything }
+        $panel.OpenDownload = { Open-Download }
         # Quit runs through the same path the tray menu uses, so the finally block
         # that restores every player and saves the config still runs.
         $panel.QuitRequested = { $script:Quit = $true }
@@ -4977,6 +5199,11 @@ function Show-Panel {
         $panel.Location = [System.Drawing.Point]::new($panelX, $panelY)
 
         Sync-Panel
+        # The check may well have finished before this window existed: -Tray
+        # starts without one. Whatever it found is waiting in the global.
+        if ($script:LatestVersion -and (Test-NewerVersion $script:LatestVersion)) {
+            $script:Panel.ShowUpdate($script:LatestVersion)
+        }
         $script:Syncing = $false
     }
     $script:Panel.Show()
@@ -5281,6 +5508,10 @@ $script:TrayIcon = New-TrayIcon
 # Keep the .ico and the shortcut in step with the mark this build draws.
 Write-Launcher
 
+# One request per launch, on a background task, so a slow or absent network
+# never delays the window appearing.
+Start-UpdateCheck
+
 try {
     while (-not $script:Quit) {
         # Idle waits are long because nothing needs sub-second timing; once the
@@ -5324,6 +5555,7 @@ try {
         # the idle case sleeps, only waking early if the pointer reaches a player.
         if ($hot -or $holding) { Wait-Messages $wait } else { [void][PipFade.Win]::IdleWait([uint32]$wait) }
         [System.Windows.Forms.Application]::DoEvents()
+        Poll-UpdateCheck
 
         if ($script:Watcher) {
             # process the whole queue; the sweep would eventually catch any we
