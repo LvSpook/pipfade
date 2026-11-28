@@ -65,14 +65,14 @@ jobs:
             }
           }
           if ($start -lt 0) {
-            Write-Host "no section for $tag in CHANGELOG.md; publishing the whole file"
+            Write-Host "no section for ${tag} in CHANGELOG.md; publishing the whole file"
             Copy-Item CHANGELOG.md 'dist\notes.md'
           } else {
             $body = $lines[$start..($end - 1)] -join "`n"
             $body = $body.Trim()
             "Download **pipfade-windows.zip** below, unpack it anywhere, and double-click **Start pipfade.vbs**.`n`n$body" |
               Set-Content 'dist\notes.md' -Encoding utf8
-            Write-Host "notes for $tag: $($body.Length) characters"
+            Write-Host "notes for ${tag}: $($body.Length) characters"
           }
 
       - name: Publish
