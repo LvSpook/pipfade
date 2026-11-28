@@ -78,6 +78,7 @@ namespace PipFade
         [DllImport("user32.dll")] public static extern bool SetLayeredWindowAttributes(IntPtr h, uint k, byte a, uint f);
         [DllImport("user32.dll")] public static extern bool GetLayeredWindowAttributes(IntPtr h, out uint key, out byte alpha, out uint flags);
         [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
+        [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
         [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT p);
         [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT p);
         [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr h, uint f);
@@ -580,25 +581,100 @@ namespace PipFade
                 0x0001 | 0x0002 | 0x0010); // NOSIZE | NOMOVE | NOACTIVATE
         }
 
-        // Hiding a player: ShowWindow keeps the handle, the geometry and the
-        // video stream, so it can be brought back instantly.
-        public static bool IsHidden(IntPtr h)
+        // Hiding a player by parking it off the desktop instead of with SW_HIDE.
+        //
+        // The mini player window belongs to the browser, and the browser ends it
+        // by itself: when the video leaves picture-in-picture - "back to tab",
+        // or restore full size - Chromium hides its own window and the session
+        // is over. A window we hid with SW_HIDE is invisible to us either way,
+        // so a live session and a finished one looked identical, and the next
+        // press dutifully showed the finished one back on screen: an empty
+        // frame holding the last picture, still refusing to close. That is the
+        // "stuck video" report.
+        //
+        // Parking keeps the window visible as far as Chromium is concerned, so
+        // when the session ends it is Chromium that hides it. Invisible then
+        // means "the browser closed this", never "we put it away", and the
+        // difference is something we can act on instead of guessing.
+        static readonly Dictionary<IntPtr, Win.RECT> _parked = new Dictionary<IntPtr, Win.RECT>();
+
+        // Off every monitor. Windows accepts -32000 and it is the usual place
+        // for a window nobody should see.
+        const int ParkX = -32000;
+        const int ParkY = -32000;
+
+        public static bool IsParked(IntPtr h)
         {
-            return Win.IsWindow(h) && !Win.IsWindowVisible(h);
+            return _parked.ContainsKey(h);
         }
 
-        public static void Hide(IntPtr h)
+        // Still a mini player we can bring back: alive, parked by us, and still
+        // visible. Chromium hides a window whose session ended, so an invisible
+        // parked window is a finished one.
+        public static bool IsStillPip(IntPtr h)
         {
-            if (!Win.IsWindow(h)) return;
-            Win.ShowWindow(h, 0); // SW_HIDE
+            return h != IntPtr.Zero && _parked.ContainsKey(h) &&
+                Win.IsWindow(h) && Win.IsWindowVisible(h);
         }
 
-        public static void Unhide(IntPtr h)
+        public static void Park(IntPtr h)
         {
             if (!Win.IsWindow(h)) return;
-            // SW_SHOWNOACTIVATE: come back without stealing focus from whatever
-            // the user is doing.
-            Win.ShowWindow(h, 4);
+            Win.RECT r;
+            if (!Win.GetWindowRect(h, out r)) return;
+            // Keep the first rect: parking twice must not remember the park.
+            if (!_parked.ContainsKey(h)) _parked[h] = r;
+            Win.SetWindowPos(h, IntPtr.Zero, ParkX, ParkY, 0, 0, 0x0011); // NOSIZE | NOACTIVATE | NOZORDER
+        }
+
+        // Back to the rect it was parked from, without stealing focus. Returns
+        // false when the window is gone, which the caller treats as nothing to
+        // bring back.
+        public static bool Unpark(IntPtr h)
+        {
+            Win.RECT r;
+            if (!Win.IsWindow(h)) { _parked.Remove(h); return false; }
+            if (!_parked.TryGetValue(h, out r)) return false;
+            _parked.Remove(h);
+            Win.SetWindowPos(h, IntPtr.Zero, r.L, r.T, r.R - r.L, r.B - r.T, 0x0014); // NOZORDER | NOACTIVATE
+            return true;
+        }
+
+        // Drops the record, and closes the leftover window when the browser is
+        // finished with it. Without the close every mini player the user closes
+        // while it is parked leaves one more invisible window in the process;
+        // four of those were sitting in the window list while this was found.
+        public static void Forget(IntPtr h)
+        {
+            if (h == IntPtr.Zero) return;
+            _parked.Remove(h);
+            if (Win.IsWindow(h) && !Win.IsWindowVisible(h))
+            {
+                Win.PostMessage(h, 0x0010, IntPtr.Zero, IntPtr.Zero); // WM_CLOSE
+            }
+        }
+
+        // Puts every parked player back, or closes the ones whose session ended
+        // while they were out of sight. Used on the way out: the user must not
+        // be left with a mini player they cannot reach, and a window the browser
+        // has finished with must not be pushed back on screen as an empty frame.
+        public static int UnparkAll()
+        {
+            IntPtr[] list = new IntPtr[_parked.Count];
+            _parked.Keys.CopyTo(list, 0);
+            int done = 0;
+            foreach (IntPtr h in list)
+            {
+                if (IsStillPip(h))
+                {
+                    if (Unpark(h)) done++;
+                }
+                else
+                {
+                    Forget(h);
+                }
+            }
+            return done;
         }
 
         // True while a key is physically down. RegisterHotKey fires once per
@@ -649,7 +725,7 @@ namespace PipFade
 # ------------------------------------------------------------------- version
 # The one number that has to agree with the git tag. It is only used to answer
 # "is there a newer one than this": nothing else in the app reads it.
-$script:Version = '1.2.0'
+$script:Version = '1.3.0'
 
 $script:LatestVersion = $null
 
@@ -4240,29 +4316,42 @@ function Adopt-Existing {    $all = @([PipFade.Finder]::Find())
     return $all.Count
 }
 
-# Hiding keeps the window, its geometry and its video stream: ShowWindow only
-# takes it off screen, so bringing it back costs nothing and the saved opacity
-# survives. A window hidden this way also stops matching the detector, which is
-# why the handle is remembered until it comes back.
+# Hiding keeps the window, its geometry and its video stream: the player is
+# parked off the desktop rather than hidden, so bringing it back costs nothing
+# and the saved opacity survives. A parked window also stops matching the
+# detector, which is why the handle is remembered until it comes back.
 function Set-PlayerHidden([IntPtr]$h, [bool]$hidden) {
     if ($h -eq [IntPtr]::Zero -or -not [PipFade.Win]::IsWindow($h)) { return }
     if ($hidden) {
-        if (-not [PipFade.Win]::IsWindowVisible($h)) { $script:HiddenFor = $h; return }
+        if ([PipFade.Finder]::IsParked($h)) { $script:HiddenFor = $h; return }
         if ($script:Strip) { $script:Strip.Vanish() }
-        [PipFade.Finder]::Hide($h)
+        [PipFade.Finder]::Park($h)
         $script:HiddenFor = $h
     } else {
-        [PipFade.Finder]::Unhide($h)
+        [PipFade.Finder]::Unpark($h)
         if ($script:HiddenFor -eq $h) { $script:HiddenFor = [IntPtr]::Zero }
         $script:Dirty = $true
     }
 }
 
+# Only brings back a player whose video is still in picture-in-picture mode.
+# While parked, the browser keeps the window visible, so it hides its own window
+# the moment the user leaves the mini player - "back to tab" or restore full
+# size. An invisible parked window is therefore a finished session, and showing
+# it would put an empty frame on screen holding the last picture. Closing it
+# instead is the only way to get rid of it: the browser will not.
 function Show-PlayerAgain {
     if ($script:HiddenFor -eq [IntPtr]::Zero) { return $false }
-    if (-not [PipFade.Win]::IsWindow($script:HiddenFor)) { $script:HiddenFor = [IntPtr]::Zero; return $false }
-    Set-PlayerHidden $script:HiddenFor $false
-    return $true
+    $h = $script:HiddenFor
+    if ([PipFade.Finder]::IsStillPip($h)) {
+        Set-PlayerHidden $h $false
+        return $true
+    }
+    # The session ended while it was out of sight. Let the window go quietly.
+    [PipFade.Finder]::Forget($h)
+    $script:HiddenFor = [IntPtr]::Zero
+    $script:Dirty = $true
+    return $false
 }
 
 # Toggle mode: one press hides, the next brings it back. Hold mode does nothing
@@ -5611,8 +5700,11 @@ finally {
     if ($script:Watcher) { $script:Watcher.Dispose() }
     if ($script:Hotkeys) { $script:Hotkeys.Dispose() }
     Dispose-Strip
-    # Never leave a player hidden: quitting must give the window back.
+    # Never leave a player parked off screen: quitting must give the window
+    # back. UnparkAll covers every window that is out of sight, including one
+    # whose session ended and which Show-PlayerAgain would only close.
     [void](Show-PlayerAgain)
+    [void][PipFade.Finder]::UnparkAll()
     # RestoreAll covers every window this run faded, not just the one that is
     # currently under the pointer. Two players open at once both get faded, and
     # a window that has since stopped matching the detector would otherwise be

@@ -3,6 +3,24 @@
 All notable changes to pipfade are recorded here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## What's New in v1.3.0
+
+A hidden player that stays a player.
+
+### Hide and show
+
+- **Hiding no longer strands an empty frame.** The mini player window belongs to
+  the browser, and the browser ends it by itself when the video leaves
+  picture-in-picture - "back to tab", or restore full size. A window taken off
+  screen with the usual hide call looks exactly the same whether its session is
+  still running or already finished, so pressing show afterwards could not tell
+  the difference and put a dead window back on the desktop: a frozen picture that
+  would not close. Hiding now parks the window past the edge of every monitor
+  instead, which leaves Chromium free to end the session properly, and a player
+  whose session ended while it was away is closed rather than shown.
+- **Quitting gives the player back**, and a window the browser has finished with
+  is cleaned up instead of being left invisible in the process.
+
 ## What's New in v1.2.0
 
 A size that remembers what the video looks like, and a quiet word when there is
